@@ -10,6 +10,7 @@ let package = Package(
         .executableTarget(
             name: "AthlonAgent",
             path: "AthlonAgent",
+            exclude: ["Info.plist"],
             resources: [
                 .process("Assets.xcassets")
             ]

@@ -340,8 +340,8 @@ final class AppState: ObservableObject {
                         id: UUID().uuidString,
                         role: .assistant,
                         content: "",
-                        toolCalls: [toolCall],
-                        createdAt: Date()
+                        createdAt: Date(),
+                        toolCalls: [toolCall]
                     )
                     self.messages.append(tcMsg)
                     self.sessionManager.addMessage(tcMsg, to: id)

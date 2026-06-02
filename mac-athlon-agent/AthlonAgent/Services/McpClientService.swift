@@ -89,7 +89,7 @@ class McpClientService: ObservableObject {
     private func discoverTools(for server: McpServerItem) {
         // In production, this calls the MCP server's list_tools method
         // For now, populate with configured tools
-        if let idx = servers.firstIndex(where: { $0.id == server.id }) {
+        if servers.contains(where: { $0.id == server.id }) {
             // MCP protocol discovery would happen here
         }
     }

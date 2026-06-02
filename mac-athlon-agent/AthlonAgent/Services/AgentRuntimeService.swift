@@ -63,7 +63,7 @@ class AgentRuntimeService: ObservableObject {
         currentReasoning = ""
         currentToolCalls = []
 
-        var request = buildRequest(
+        let request = buildRequest(
             messages: messages,
             systemPrompt: systemPrompt,
             tools: tools,
@@ -301,9 +301,9 @@ class AgentRuntimeService: ObservableObject {
             }
         }
 
-        // Emit any remaining tool calls
-        for (_, tc) in pendingToolCalls where !pendingToolCalls.keys.isEmpty {
-            // Only emit if not already emitted via finish_reason
+        // Emit any remaining tool calls (only if not already emitted via finish_reason)
+        if !pendingToolCalls.keys.isEmpty {
+            // Remaining tool calls already emitted via finish_reason
         }
 
         completion(.success(fullContent))
@@ -319,7 +319,7 @@ class AgentRuntimeService: ObservableObject {
         guard !isRunning else { return }
         isRunning = true
 
-        var request = buildRequest(
+        let request = buildRequest(
             messages: messages,
             systemPrompt: systemPrompt,
             tools: tools,
@@ -357,8 +357,8 @@ class AgentRuntimeService: ObservableObject {
             id: UUID().uuidString,
             role: .tool,
             content: result,
-            toolCallId: toolCall.id,
-            createdAt: Date()
+            createdAt: Date(),
+            toolCallId: toolCall.id
         )
     }
 

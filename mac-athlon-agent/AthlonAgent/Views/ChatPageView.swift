@@ -94,7 +94,7 @@ struct ChatPageView: View {
                 }
                 .padding(.vertical, 8)
             }
-            .onChange(of: appState.activeMessages.count) { _ in
+            .onChange(of: appState.activeMessages.count) {
                 withAnimation {
                     if let lastId = appState.activeMessages.last?.id {
                         scrollProxy.scrollTo(lastId, anchor: .bottom)

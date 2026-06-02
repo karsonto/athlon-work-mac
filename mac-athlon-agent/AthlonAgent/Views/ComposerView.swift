@@ -71,7 +71,7 @@ struct ComposerView: View {
             mainInputArea
         }
         .background(colors.panel)
-        .onChange(of: messageText) { newValue in
+        .onChange(of: messageText) { _, newValue in
             handleAtTrigger(newValue)
         }
     }
@@ -323,7 +323,7 @@ struct ComposerView: View {
                 let attachment = ImageAttachment(
                     id: UUID().uuidString,
                     fileName: url.lastPathComponent,
-                    filePath: url.path,
+                    filePath: url,
                     thumbnailData: data,
                     fileSize: Int64(data.count)
                 )
