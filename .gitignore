@@ -1,0 +1,78 @@
+# ============================
+# macOS
+# ============================
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# ============================
+# Swift / Xcode
+# ============================
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcuserdata/
+DerivedData/
+.swiftpm/
+.build/
+*.xcbkptlist
+*.resolved
+
+# ============================
+# .NET
+# ============================
+bin/
+obj/
+**/bin/
+**/obj/
+artifacts/
+**/artifacts/
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+.vscode/
+.idea/
+
+# Publish and installer outputs
+publish/
+installer/
+*.nupkg
+*.snupkg
+
+# Runtime data and logs
+logs/
+*.log
+*.tmp
+*.bak
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Node (icon generation, etc.)
+**/node_modules/
+
+# License signing private key (never commit)
+tools/license/keys/private.pem
+tools/license/.venv/
+
+# ============================
+# IDE / Editor
+# ============================
+*.swp
+*.swo
+*~
