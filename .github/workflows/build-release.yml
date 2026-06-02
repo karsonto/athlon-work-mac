@@ -10,6 +10,8 @@ jobs:
   build:
     name: Build macOS App
     runs-on: macos-14
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -91,3 +93,4 @@ jobs:
         with:
           files: ${{ env.DMG_PATH }}
           generate_release_notes: true
+
