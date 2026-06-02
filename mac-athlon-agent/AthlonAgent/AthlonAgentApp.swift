@@ -10,8 +10,8 @@ struct AthlonAgentApp: App {
                 .environmentObject(appState)
                 .preferredColorScheme(appState.theme.colorScheme)
                 .frame(minWidth: 1100, minHeight: 720)
-                .windowResizability(.contentMinSize)
         }
+        .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}

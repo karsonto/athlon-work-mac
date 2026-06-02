@@ -32,7 +32,7 @@ struct ComposerView: View {
         for skill in appState.skills {
             let name = skill.name
             if atFilterText.isEmpty || name.localizedCaseInsensitiveContains(atFilterText) {
-                items.append(("技能", "sparkles", name, skill.description ?? ""))
+                items.append(("技能", "sparkles", name, skill.description))
             }
         }
 
@@ -235,6 +235,7 @@ struct ComposerView: View {
                     .buttonStyle(.plain)
                     .foregroundColor(colors.subtleText)
                     .padding(.leading, 8)
+                }
 
                 Spacer()
 
@@ -322,9 +323,9 @@ struct ComposerView: View {
                 let attachment = ImageAttachment(
                     id: UUID().uuidString,
                     fileName: url.lastPathComponent,
-                    originalURL: url,
+                    filePath: url.path,
                     thumbnailData: data,
-                    originalData: data
+                    fileSize: Int64(data.count)
                 )
                 attachedImages.append(attachment)
             }

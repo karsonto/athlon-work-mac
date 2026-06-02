@@ -122,7 +122,7 @@ class PlanViewModel: ObservableObject {
     func clearPlan() {
         plan = nil
         isPlanActive = false
-        sessionManager.updatePlan(nil, for: sessionId)
+        sessionManager.updatePlan(nil as AgentPlan?, for: sessionId)
     }
 
     // MARK: - Auto-Continue

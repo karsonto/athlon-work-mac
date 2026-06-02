@@ -129,9 +129,7 @@ private func buildHTML(_ markdown: String, isDark: Bool) -> String {
 }
 
 private func escapeForJavaScript(_ text: String) -> String {
-    // Use JSON encoder to safely embed markdown as JS string
-    let encoder = JSONEncoder()
-    // Simple approach: manually escape
+    // Simple approach: manually escape markdown for JS embedding
     let escaped = text
         .replacingOccurrences(of: "\\", with: "\\\\")
         .replacingOccurrences(of: "`", with: "\\`")

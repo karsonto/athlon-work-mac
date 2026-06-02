@@ -126,18 +126,20 @@ class McpClientService: ObservableObject {
             McpServerItem(
                 id: "filesystem",
                 name: "filesystem",
-                command: "npx",
-                args: ["-y", "@modelcontextprotocol/server-filesystem", "/"],
+                summary: "Local file system access via MCP",
+                toolNames: ["read_file", "write_file", "list_directory", "search_files"],
                 isEnabled: true,
-                tools: ["read_file", "write_file", "list_directory", "search_files"]
+                isStatusHealthy: false,
+                isStatusError: false
             ),
             McpServerItem(
                 id: "web-search",
                 name: "web-search",
-                command: "npx",
-                args: ["-y", "@modelcontextprotocol/server-brave-search"],
+                summary: "Web search capabilities via Brave Search API",
+                toolNames: ["brave_web_search", "brave_local_search"],
                 isEnabled: false,
-                tools: ["brave_web_search", "brave_local_search"]
+                isStatusHealthy: false,
+                isStatusError: false
             )
         ]
     }

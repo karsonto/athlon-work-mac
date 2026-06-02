@@ -21,4 +21,6 @@ enum MessageRole: String, Codable {
     var assistantTone: Bool {
         self == .assistant || self == .compaction
     }
+
+    var apiValue: String { rawValue.lowercased() }
 }

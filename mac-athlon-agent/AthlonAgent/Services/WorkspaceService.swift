@@ -96,16 +96,13 @@ class WorkspaceService: ObservableObject {
             if isIgnored(childRelPath) { continue }
 
             let isDir = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            let fileSize = (try? childURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
 
             let node = WorkspaceNode(
                 id: childRelPath,
                 name: childURL.lastPathComponent,
                 path: childRelPath,
                 isDirectory: isDir,
-                fileSize: fileSize,
-                iconKind: iconKind(for: childURL.lastPathComponent, isDirectory: isDir),
-                children: nil
+                iconKind: iconKind(for: childURL.lastPathComponent, isDirectory: isDir)
             )
             nodes.append(node)
 
@@ -127,7 +124,7 @@ class WorkspaceService: ObservableObject {
         var nodeMap: [String: WorkspaceNode] = [:]
         var children: [String: [WorkspaceNode]] = [:]
 
-        for var node in flatNodes {
+        for node in flatNodes {
             nodeMap[node.path] = node
             let parent = parentPath(of: node.path)
             children[parent, default: []].append(node)
@@ -135,7 +132,7 @@ class WorkspaceService: ObservableObject {
 
         // Attach children
         var result: [WorkspaceNode] = []
-        for var node in flatNodes {
+        for node in flatNodes {
             if let kids = children[node.path] {
                 node.children = kids.sorted { a, b in
                     if a.isDirectory != b.isDirectory { return a.isDirectory }

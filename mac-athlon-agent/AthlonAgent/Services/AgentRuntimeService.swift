@@ -192,8 +192,8 @@ class AgentRuntimeService: ObservableObject {
             ]
 
             // Attach tool calls
-            if !msg.toolCalls.isEmpty {
-                entry["tool_calls"] = msg.toolCalls.map { tc in
+            if let toolCalls = msg.toolCalls, !toolCalls.isEmpty {
+                entry["tool_calls"] = toolCalls.map { tc in
                     [
                         "id": tc.id,
                         "type": "function",
@@ -277,7 +277,8 @@ class AgentRuntimeService: ObservableObject {
                             id: tcId,
                             name: name,
                             arguments: arguments,
-                            content: nil
+                            argumentsStreaming: "",
+                            status: .none
                         )
                         pendingToolCalls[tcId] = tc
                     }
@@ -292,7 +293,8 @@ class AgentRuntimeService: ObservableObject {
                         id: tc.id,
                         name: tc.name.trimmingCharacters(in: .whitespaces),
                         arguments: tc.arguments.trimmingCharacters(in: .whitespaces),
-                        content: nil
+                        argumentsStreaming: "",
+                        status: .none
                     )
                     onToolCall(finalized)
                 }
@@ -356,7 +358,7 @@ class AgentRuntimeService: ObservableObject {
             role: .tool,
             content: result,
             toolCallId: toolCall.id,
-            timestamp: Date()
+            createdAt: Date()
         )
     }
 
@@ -383,7 +385,7 @@ class AgentRuntimeService: ObservableObject {
             id: "compaction_\(UUID().uuidString)",
             role: .system,
             content: "[上下文已压缩: \(removedCount) 条较早消息已移除，保留最后 \(recentCount) 条消息]",
-            timestamp: Date()
+            createdAt: Date()
         )
 
         return systemMsgs + [compactionNote] + recent
@@ -446,7 +448,8 @@ struct AgentResponse {
                             id: tc["id"] as? String ?? UUID().uuidString,
                             name: function["name"] as? String ?? "",
                             arguments: function["arguments"] as? String ?? "{}",
-                            content: nil
+                            argumentsStreaming: "",
+                            status: .none
                         ))
                     }
                 }

@@ -20,12 +20,13 @@ class ImageAttachmentService: ObservableObject {
 
             let thumbnailData = generateThumbnail(from: originalData, maxSize: thumbnailSize, compression: compression)
 
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? Int64(originalData.count)
             let attachment = ImageAttachment(
                 id: UUID().uuidString,
                 fileName: url.lastPathComponent,
-                originalURL: url,
+                filePath: url,
                 thumbnailData: thumbnailData,
-                originalData: originalData
+                fileSize: fileSize
             )
             attachments.append(attachment)
         }

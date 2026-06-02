@@ -195,7 +195,7 @@ struct NavigationSidebarView: View {
         var olderSessions: [AgentSession] = []
 
         for session in appState.sessions {
-            let date = session.lastActivityAt
+            let date = session.updatedAt
             if date >= startOfToday {
                 todaySessions.append(session)
             } else if date >= startOfYesterday {
@@ -213,7 +213,7 @@ struct NavigationSidebarView: View {
                 id: "today",
                 title: "今天",
                 items: todaySessions.map { SessionHistoryItem(id: $0.id, title: $0.title.isEmpty ? "新会话" : $0.title,
-                    updatedAtText: shortTime(from: $0.lastActivityAt), isActive: appState.activeSessionId == $0.id,
+                    updatedAtText: shortTime(from: $0.updatedAt), isActive: appState.activeSessionId == $0.id,
                     isRunning: $0.isRunning) }
             ))
         }
@@ -222,7 +222,7 @@ struct NavigationSidebarView: View {
                 id: "yesterday",
                 title: "昨天",
                 items: yesterdaySessions.map { SessionHistoryItem(id: $0.id, title: $0.title.isEmpty ? "新会话" : $0.title,
-                    updatedAtText: shortTime(from: $0.lastActivityAt), isActive: appState.activeSessionId == $0.id,
+                    updatedAtText: shortTime(from: $0.updatedAt), isActive: appState.activeSessionId == $0.id,
                     isRunning: $0.isRunning) }
             ))
         }
@@ -231,7 +231,7 @@ struct NavigationSidebarView: View {
                 id: "thisweek",
                 title: "本周",
                 items: thisWeekSessions.map { SessionHistoryItem(id: $0.id, title: $0.title.isEmpty ? "新会话" : $0.title,
-                    updatedAtText: shortTime(from: $0.lastActivityAt), isActive: appState.activeSessionId == $0.id,
+                    updatedAtText: shortTime(from: $0.updatedAt), isActive: appState.activeSessionId == $0.id,
                     isRunning: $0.isRunning) }
             ))
         }
@@ -240,7 +240,7 @@ struct NavigationSidebarView: View {
                 id: "older",
                 title: "更早",
                 items: olderSessions.map { SessionHistoryItem(id: $0.id, title: $0.title.isEmpty ? "新会话" : $0.title,
-                    updatedAtText: shortTime(from: $0.lastActivityAt), isActive: appState.activeSessionId == $0.id,
+                    updatedAtText: shortTime(from: $0.updatedAt), isActive: appState.activeSessionId == $0.id,
                     isRunning: $0.isRunning) }
             ))
         }

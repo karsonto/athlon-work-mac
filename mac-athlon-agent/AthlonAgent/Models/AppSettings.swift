@@ -31,7 +31,7 @@ struct ModelSettings: Codable {
 
 // MARK: - MCP Server Settings
 struct McpServerSettings: Identifiable, Codable {
-    let id: String = UUID().uuidString
+    var id: String = UUID().uuidString
     var name: String
     var command: String
     var args: [String]
@@ -41,7 +41,7 @@ struct McpServerSettings: Identifiable, Codable {
 
 // MARK: - Skill Settings
 struct SkillSettings: Identifiable, Codable {
-    let id: String = UUID().uuidString
+    var id: String = UUID().uuidString
     var name: String
     var enabled: Bool
     var path: String?
@@ -58,7 +58,7 @@ struct WorkspaceIgnoreSettings: Codable {
 
 // MARK: - Workspace Settings
 struct WorkspaceSettings: Identifiable, Codable {
-    let id: String = UUID().uuidString
+    var id: String = UUID().uuidString
     var rootPath: String
     var name: String
     var ignorePatterns: [String]?

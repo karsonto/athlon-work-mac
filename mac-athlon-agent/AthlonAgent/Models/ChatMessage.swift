@@ -52,6 +52,7 @@ struct ChatMessage: Identifiable, Codable {
     var imageAttachments: [ImageAttachment]?
     var toolCalls: [AgentToolCall]?
     var parentMessageId: String?
+    var toolCallId: String?
     var isStreaming: Bool
     var isReasoningStreaming: Bool
 
@@ -72,6 +73,7 @@ struct ChatMessage: Identifiable, Codable {
          imageAttachments: [ImageAttachment]? = nil,
          toolCalls: [AgentToolCall]? = nil,
          parentMessageId: String? = nil,
+         toolCallId: String? = nil,
          isStreaming: Bool = false,
          isReasoningStreaming: Bool = false) {
         self.id = id
@@ -82,6 +84,7 @@ struct ChatMessage: Identifiable, Codable {
         self.imageAttachments = imageAttachments
         self.toolCalls = toolCalls
         self.parentMessageId = parentMessageId
+        self.toolCallId = toolCallId
         self.isStreaming = isStreaming
         self.isReasoningStreaming = isReasoningStreaming
     }

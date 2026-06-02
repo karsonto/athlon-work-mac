@@ -50,16 +50,15 @@ class SkillService: ObservableObject {
                 guard FileManager.default.fileExists(atPath: skillFile.path) else { continue }
 
                 let name = url.lastPathComponent
-                let (description, version) = parseSkillMetadata(from: skillFile)
+                let (description, _) = parseSkillMetadata(from: skillFile)
 
                 let enabled = enabledStates[name] ?? true
                 let skill = SkillItem(
                     id: name,
                     name: name,
-                    description: description,
-                    version: version,
-                    path: url,
-                    isEnabled: enabled
+                    description: description ?? "",
+                    isEnabled: enabled,
+                    isInstalled: true
                 )
                 loadedSkills.append(skill)
             }

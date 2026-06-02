@@ -7,12 +7,13 @@ struct ImageAttachment: Identifiable, Codable {
     let filePath: URL
     let thumbnailData: Data?
     let fileSize: Int64
+    var originalData: Data? { try? Data(contentsOf: filePath) }
 
     var thumbnail: Data? { thumbnailData }
 }
 
 // MARK: - MCP Server Item
-struct McpServerItem: Identifiable {
+struct McpServerItem: Identifiable, Codable {
     let id: String
     var name: String
     var displayInitial: String { String(name.prefix(1)).uppercased() }
@@ -28,6 +29,10 @@ struct McpServerItem: Identifiable {
 
     var toggleExpandedAction: () -> Void = {}
     var toggleEnabledAction: (Bool) -> Void = { _ in }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, summary, toolNames, isEnabled, isStatusHealthy, isStatusError, isExpanded
+    }
 }
 
 // MARK: - Skill Item
@@ -75,6 +80,16 @@ enum WorkspaceIconKind: String {
     case markdown = "markdown"
     case terminal = "terminal"
     case settings = "settings"
+    case csharp = "csharp"
+    case typescript = "typescript"
+    case javascript = "javascript"
+    case python = "python"
+    case html = "html"
+    case css = "css"
+    case yaml = "yaml"
+    case xml = "xml"
+    case shell = "shell"
+    case config = "config"
 
     var systemName: String {
         switch self {
@@ -87,6 +102,16 @@ enum WorkspaceIconKind: String {
         case .markdown: "text.alignleft"
         case .terminal: "terminal"
         case .settings: "gearshape"
+        case .csharp: "c.square"
+        case .typescript: "t.square"
+        case .javascript: "j.square"
+        case .python: "p.square"
+        case .html: "chevron.left.slash.chevron.right"
+        case .css: "paintpalette"
+        case .yaml: "list.bullet.rectangle"
+        case .xml: "tag"
+        case .shell: "terminal"
+        case .config: "gearshape"
         }
     }
 }

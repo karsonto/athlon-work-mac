@@ -69,7 +69,7 @@ final class AppState: ObservableObject {
     @Published var isContextSidebarVisible: Bool = true
 
     // MARK: - Settings
-    @Published var settings: AppSettings = AppSettings()
+    @Published var settings: AppSettings = AppSettings.default
 
     // MARK: - Services
     private(set) var themeManager: ThemeManager!
@@ -178,7 +178,7 @@ final class AppState: ObservableObject {
         guard FileManager.default.fileExists(atPath: settingsURL.path),
               let data = try? Data(contentsOf: settingsURL),
               let loaded = try? JSONDecoder().decode(AppSettings.self, from: data) else {
-            settings = AppSettings()
+            settings = AppSettings.default
             return
         }
         settings = loaded
@@ -289,7 +289,7 @@ final class AppState: ObservableObject {
             id: UUID().uuidString,
             role: .user,
             content: text,
-            timestamp: Date()
+            createdAt: Date()
         )
         messages.append(userMsg)
 
@@ -304,7 +304,7 @@ final class AppState: ObservableObject {
             id: UUID().uuidString,
             role: .assistant,
             content: "",
-            timestamp: Date()
+            createdAt: Date()
         )
         messages.append(assistantMsg)
 
@@ -324,60 +324,61 @@ final class AppState: ObservableObject {
         agentRuntime.sendMessage(
             messages: messages,
             systemPrompt: systemPrompt,
-            tools: tools
-        ) { [weak self] chunk in
-            // Update streaming assistant message
-            DispatchQueue.main.async {
-                guard let self = self, let idx = self.messages.firstIndex(where: { $0.id == assistantMsg.id }) else { return }
-                self.messages[idx].content += chunk
-            }
-        } onToolCall: { [weak self] toolCall in
-            // Handle tool call - add to messages
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                let tcMsg = ChatMessage(
-                    id: UUID().uuidString,
-                    role: .assistant,
-                    content: "",
-                    toolCalls: [toolCall],
-                    timestamp: Date()
-                )
-                self.messages.append(tcMsg)
-                self.sessionManager.addMessage(tcMsg, to: id)
-            }
-        } onReasoningChunk: { [weak self] reasoning in
-            DispatchQueue.main.async {
-                guard let self = self, let idx = self.messages.firstIndex(where: { $0.id == assistantMsg.id }) else { return }
-                // Store reasoning in metadata for display
-                var msg = self.messages[idx]
-                msg.content = msg.content + "" // keep existing; reasoning is stored separately
-                // Actually, in original implementation reasoning is separate field
-            }
-        } completion: { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.sessionManager.updateSession(id) { session in
-                    session.isRunning = false
-                    session.messages = self.messages
-                    session.updatedAt = Date()
+            tools: tools,
+            onChunk: { [weak self] chunk in
+                // Update streaming assistant message
+                DispatchQueue.main.async {
+                    guard let self = self, let idx = self.messages.firstIndex(where: { $0.id == assistantMsg.id }) else { return }
+                    self.messages[idx].content += chunk
                 }
-
-                switch result {
-                case .success(let fullText):
-                    if let idx = self.messages.firstIndex(where: { $0.id == assistantMsg.id }) {
-                        self.messages[idx].content = fullText
-                    }
-                case .failure(let error):
-                    self.messages.append(ChatMessage(
+            },
+            onToolCall: { [weak self] toolCall in
+                // Handle tool call - add to messages
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    let tcMsg = ChatMessage(
                         id: UUID().uuidString,
-                        role: .system,
-                        content: "错误: \(error.localizedDescription)",
-                        timestamp: Date()
-                    ))
+                        role: .assistant,
+                        content: "",
+                        toolCalls: [toolCall],
+                        createdAt: Date()
+                    )
+                    self.messages.append(tcMsg)
+                    self.sessionManager.addMessage(tcMsg, to: id)
                 }
-                self.sessionGroups = self.buildSessionGroups()
+            },
+            onReasoningChunk: { [weak self] reasoning in
+                DispatchQueue.main.async {
+                    guard let self = self, let idx = self.messages.firstIndex(where: { $0.id == assistantMsg.id }) else { return }
+                    self.messages[idx].reasoningContent += reasoning
+                }
+            },
+            completion: { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.sessionManager.updateSession(id) { session in
+                        session.isRunning = false
+                        session.messages = self.messages
+                        session.updatedAt = Date()
+                    }
+
+                    switch result {
+                    case .success(let fullText):
+                        if let idx = self.messages.firstIndex(where: { $0.id == assistantMsg.id }) {
+                            self.messages[idx].content = fullText
+                        }
+                    case .failure(let error):
+                        self.messages.append(ChatMessage(
+                            id: UUID().uuidString,
+                            role: .system,
+                            content: "错误: \(error.localizedDescription)",
+                            createdAt: Date()
+                        ))
+                    }
+                    self.sessionGroups = self.buildSessionGroups()
+                }
             }
-        }
+        )
     }
 
     private func buildToolDefinitions() -> [ToolDefinition] {

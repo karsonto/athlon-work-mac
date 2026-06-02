@@ -1,3 +1,5 @@
+import SwiftUI
+
 // MARK: - App Theme
 enum AppTheme: String, CaseIterable {
     case light = "Light"
