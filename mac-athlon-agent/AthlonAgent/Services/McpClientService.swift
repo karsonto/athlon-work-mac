@@ -2,151 +2,133 @@ import Foundation
 import Combine
 
 // MARK: - MCP Client Service
-/// Manages MCP (Model Context Protocol) server connections, tool discovery, and runtime status.
-class McpClientService: ObservableObject {
+/// Mirrors `settings.mcpServers` for UI and delegates connections to `McpRegistry`.
+@MainActor
+final class McpClientService: ObservableObject {
     @Published var servers: [McpServerItem] = []
-    @Published var connectionStates: [String: McpConnectionState] = [:]
+    @Published var connectionStates: [String: McpUiConnectionState] = [:]
 
-    private let mcpDir: URL
+    private let registry: McpRegistry
 
-    init(configDirectory: URL? = nil) {
-        if let dir = configDirectory {
-            self.mcpDir = dir
-        } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            self.mcpDir = appSupport.appendingPathComponent("AthlonAgent/MCP")
-        }
-        ensureDirectory()
-        loadServers()
+    init(registry: McpRegistry? = nil) {
+        self.registry = registry ?? McpRegistry()
     }
 
-    private func ensureDirectory() {
-        try? FileManager.default.createDirectory(at: mcpDir, withIntermediateDirectories: true)
-    }
-
-    // MARK: - CRUD
-    func loadServers() {
-        let fileURL = mcpDir.appendingPathComponent("mcp_servers.json")
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            servers = defaultServers
-            saveServers()
-            return
+    /// Rebuild UI items from persisted settings (single source: `config/mcp.json` via `SettingsStore`).
+    func syncFromSettings(_ mcpServers: [McpServerSettings]) {
+        var previousTools: [String: [String]] = [:]
+        for server in servers {
+            previousTools[server.name] = server.toolNames
         }
 
-        do {
-            let data = try Data(contentsOf: fileURL)
-            servers = try JSONDecoder().decode([McpServerItem].self, from: data)
-        } catch {
-            servers = defaultServers
-        }
-    }
-
-    func saveServers() {
-        let fileURL = mcpDir.appendingPathComponent("mcp_servers.json")
-        do {
-            let data = try JSONEncoder().encode(servers)
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            print("MCP save error: \(error)")
-        }
-    }
-
-    func addServer(_ server: McpServerItem) {
-        servers.append(server)
-        saveServers()
-    }
-
-    func removeServer(_ id: String) {
-        servers.removeAll { $0.id == id }
-        connectionStates.removeValue(forKey: id)
-        saveServers()
-    }
-
-    func toggleServer(_ id: String) {
-        if let idx = servers.firstIndex(where: { $0.id == id }) {
-            servers[idx].isEnabled.toggle()
-            saveServers()
+        servers = mcpServers.map { settings in
+            let name = settings.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let transport = settings.transportType.isEmpty ? "stdio" : settings.transportType
+            let summary: String
+            if McpTransportKinds.isStreamableHttp(transport) {
+                summary = settings.url.isEmpty ? "Streamable HTTP" : settings.url
+            } else {
+                let cmd = [settings.command] + settings.args
+                summary = cmd.filter { !$0.isEmpty }.joined(separator: " ")
+            }
+            return McpServerItem(
+                id: settings.id,
+                name: name.isEmpty ? settings.id : name,
+                summary: summary.isEmpty ? "MCP server" : summary,
+                toolNames: previousTools[name] ?? [],
+                isEnabled: settings.enabled,
+                isStatusHealthy: false,
+                isStatusError: false
+            )
         }
     }
 
     // MARK: - Connection Management
-    func connect(to serverId: String) {
-        connectionStates[serverId] = .connecting
-        // Simulate connection
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.connectionStates[serverId] = .connected
-            // Discover tools
-            if let server = self?.servers.first(where: { $0.id == serverId }) {
-                self?.discoverTools(for: server)
-            }
+    func refreshConnections(settings: [McpServerSettings], workspaceRoot: String?) {
+        syncFromSettings(settings)
+        Task {
+            await registry.refresh(servers: settings, workspaceRoot: workspaceRoot)
+            await syncStatusesFromRegistry()
         }
+    }
+
+    func connect(to serverId: String, settings: [McpServerSettings], workspaceRoot: String?) {
+        connectionStates[serverId] = .connecting
+        refreshConnections(settings: settings, workspaceRoot: workspaceRoot)
     }
 
     func disconnect(from serverId: String) {
         connectionStates[serverId] = .disconnected
     }
 
-    private func discoverTools(for server: McpServerItem) {
-        // In production, this calls the MCP server's list_tools method
-        // For now, populate with configured tools
-        if servers.contains(where: { $0.id == server.id }) {
-            // MCP protocol discovery would happen here
+    private func syncStatusesFromRegistry() async {
+        let statuses = await registry.getStatuses()
+        var toolNamesByServer: [String: [String]] = [:]
+        for status in statuses {
+            let uiState: McpUiConnectionState
+            switch status.state {
+            case .connected: uiState = .connected
+            case .connecting: uiState = .connecting
+            case .error: uiState = .error
+            case .disabled: uiState = .disconnected
+            }
+            connectionStates[status.name] = uiState
+            toolNamesByServer[status.name] = status.tools.map(\.name)
+        }
+
+        for index in servers.indices {
+            let name = servers[index].name
+            if let tools = toolNamesByServer[name] {
+                servers[index].toolNames = tools
+                servers[index].isStatusHealthy = connectionStates[name] == .connected
+                servers[index].isStatusError = connectionStates[name] == .error
+            }
         }
     }
 
     // MARK: - Tool Execution
-    func executeTool(serverId: String, toolName: String, arguments: [String: Any], completion: @escaping (Result<String, Error>) -> Void) {
-        // In production: call MCP server's call_tool method
-        // For now, return a placeholder
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            completion(.success("Tool \(toolName) executed successfully"))
+    func executeTool(
+        serverId: String,
+        toolName: String,
+        arguments: [String: Any],
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        var args: [String: String] = [:]
+        for (key, value) in arguments {
+            args[key] = String(describing: value)
+        }
+
+        let serverName = servers.first(where: { $0.id == serverId || $0.name == serverId })?.name ?? serverId
+        Task {
+            let result = await registry.invoke(serverName: serverName, toolName: toolName, args: args)
+            await MainActor.run {
+                if result.succeeded {
+                    completion(.success(result.content ?? result.summary))
+                } else {
+                    completion(.failure(NSError(
+                        domain: "Athlon.MCP",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: result.error ?? result.summary]
+                    )))
+                }
+            }
         }
     }
 
     // MARK: - State Helpers
-    func connectionState(for serverId: String) -> McpConnectionState {
+    func connectionState(for serverId: String) -> McpUiConnectionState {
         connectionStates[serverId] ?? .disconnected
     }
 
     var connectedServers: [McpServerItem] {
-        servers.filter { connectionStates[$0.id] == .connected }
+        servers.filter { connectionStates[$0.id] == .connected || connectionStates[$0.name] == .connected }
     }
 
-    var allAvailableTools: [String] {
-        var tools: [String] = []
-        for server in servers where server.isEnabled {
-            tools.append(contentsOf: server.toolNames)
-        }
-        return tools
-    }
-
-    // MARK: - Defaults
-    private var defaultServers: [McpServerItem] {
-        [
-            McpServerItem(
-                id: "filesystem",
-                name: "filesystem",
-                summary: "Local file system access via MCP",
-                toolNames: ["read_file", "write_file", "list_directory", "search_files"],
-                isEnabled: true,
-                isStatusHealthy: false,
-                isStatusError: false
-            ),
-            McpServerItem(
-                id: "web-search",
-                name: "web-search",
-                summary: "Web search capabilities via Brave Search API",
-                toolNames: ["brave_web_search", "brave_local_search"],
-                isEnabled: false,
-                isStatusHealthy: false,
-                isStatusError: false
-            )
-        ]
-    }
+    var registryProvider: McpRegistryProviding { registry }
 }
 
 // MARK: - Connection State
-enum McpConnectionState: String {
+enum McpUiConnectionState: String {
     case disconnected = "未连接"
     case connecting = "连接中"
     case connected = "已连接"

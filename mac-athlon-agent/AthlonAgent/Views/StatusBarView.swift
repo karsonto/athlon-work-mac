@@ -4,31 +4,52 @@ import SwiftUI
 struct StatusBarView: View {
     @EnvironmentObject var appState: AppState
 
+    private var colors: ThemeColors {
+        appState.theme == .dark ? .dark : .light
+    }
+
+    private var connectionColor: Color {
+        if appState.agentRuntime?.error != nil {
+            return colors.danger
+        }
+        if appState.isAgentRunning {
+            return colors.accent
+        }
+        return colors.success
+    }
+
+    private var connectionLabel: String {
+        if appState.agentRuntime?.error != nil {
+            return "Error"
+        }
+        if appState.isAgentRunning {
+            return "Generating"
+        }
+        return "Ready"
+    }
+
     var body: some View {
         HStack(spacing: 0) {
-            // Model status indicator
             HStack(spacing: 6) {
                 Circle()
-                    .fill(Color(hex: "#22C55E"))
+                    .fill(connectionColor)
                     .frame(width: 6, height: 6)
-                Text("Connected")
+                Text(connectionLabel)
                     .font(.system(size: 11))
-                    .foregroundColor(Color(hex: "#A1A1AA"))
+                    .foregroundColor(colors.subtleText)
             }
 
             Spacer()
 
-            // Current model
-            Text("Model: gpt-4o")
+            Text("Model: \(appState.settings.model.modelName)")
                 .font(.system(size: 11))
-                .foregroundColor(Color(hex: "#A1A1AA"))
+                .foregroundColor(colors.subtleText)
 
             Spacer()
 
-            // Logs path
             Text("Logs: \(appState.logsPath)")
                 .font(.system(size: 11))
-                .foregroundColor(Color(hex: "#A1A1AA"))
+                .foregroundColor(colors.subtleText)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .help(appState.logsPath)
@@ -36,16 +57,10 @@ struct StatusBarView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
         .frame(height: LayoutMetrics.statusBarHeight)
-        .background(
-            appState.theme == .dark
-                ? Color(hex: "#27272A")
-                : Color(hex: "#F4F4F5")
-        )
+        .background(colors.chrome)
         .overlay(
             Rectangle()
-                .fill(appState.theme == .dark
-                    ? Color(hex: "#3F3F46")
-                    : Color(hex: "#D4D4D8"))
+                .fill(colors.border.opacity(0.6))
                 .frame(height: 1),
             alignment: .top
         )

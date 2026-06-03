@@ -8,23 +8,11 @@ class SessionManager: ObservableObject {
     @Published var isLoading = false
     @Published var error: String?
 
-    private let storageURL: URL
+    private let storage: FileStorageService
     private let maxSessions = 100
-    private let sessionsFileName = "sessions.json"
 
-    init(storageDirectory: URL? = nil) {
-        if let dir = storageDirectory {
-            self.storageURL = dir
-        } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            self.storageURL = appSupport.appendingPathComponent("AthlonAgent/Sessions")
-        }
-        ensureDirectory()
-    }
-
-    // MARK: - Directory Setup
-    private func ensureDirectory() {
-        try? FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
+    init(storage: FileStorageService = FileStorageService()) {
+        self.storage = storage
     }
 
     // MARK: - Load All Sessions
@@ -32,17 +20,8 @@ class SessionManager: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let fileURL = storageURL.appendingPathComponent(sessionsFileName)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            sessions = []
-            return
-        }
-
         do {
-            let data = try Data(contentsOf: fileURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            sessions = try decoder.decode([AgentSession].self, from: data)
+            sessions = try storage.loadAllSessions()
                 .sorted { $0.updatedAt > $1.updatedAt }
         } catch {
             self.error = "无法加载会话: \(error.localizedDescription)"
@@ -50,18 +29,26 @@ class SessionManager: ObservableObject {
         }
     }
 
-    // MARK: - Save All Sessions
-    private func saveSessions() {
-        ensureDirectory()
-        let fileURL = storageURL.appendingPathComponent(sessionsFileName)
+    func clearConversationDisplay(sessionId: String) {
         do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = .prettyPrinted
-            let data = try encoder.encode(sessions)
-            try data.write(to: fileURL, options: .atomic)
+            try storage.clearConversationDisplay(sessionId)
+        } catch {
+            self.error = "无法清空对话展示缓存: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Save Session
+    private func saveSession(_ session: AgentSession) {
+        do {
+            try storage.saveSessionSync(session)
         } catch {
             self.error = "无法保存会话: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveSessions() {
+        for session in sessions {
+            saveSession(session)
         }
     }
 
@@ -72,19 +59,20 @@ class SessionManager: ObservableObject {
             id: UUID().uuidString,
             title: title ?? "新对话",
             messages: [],
-            activeWorkspace: workspace,
-            workspaceName: workspaceName,
             createdAt: Date(),
             updatedAt: Date(),
             isActive: true,
             isRunning: false,
             queuedTurnCount: 0,
-            plan: nil
+            activeWorkspace: workspace,
+            workspaceName: workspaceName,
+            plan: nil,
+            interactionMode: .agent
         )
         sessions.insert(session, at: 0)
         deactivateOtherSessions(except: session.id)
         trimSessions()
-        saveSessions()
+        saveSession(session)
         return session
     }
 
@@ -94,7 +82,7 @@ class SessionManager: ObservableObject {
         if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
             sessions[idx].isActive = true
             sessions[idx].updatedAt = Date()
-            saveSessions()
+            saveSession(sessions[idx])
         }
     }
 
@@ -107,24 +95,49 @@ class SessionManager: ObservableObject {
     // MARK: - Delete Session
     func deleteSession(_ sessionId: String) {
         sessions.removeAll { $0.id == sessionId }
-        saveSessions()
-        // Also delete individual session file if exists
-        let sessionFile = storageURL.appendingPathComponent("\(sessionId).json")
-        try? FileManager.default.removeItem(at: sessionFile)
+        do {
+            try storage.deleteSession(sessionId)
+        } catch {
+            self.error = "无法删除会话: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Update Session
     func updateSession(_ sessionId: String, update: (inout AgentSession) -> Void) {
+        updateSessionInMemory(sessionId, update: update)
+        persistSession(sessionId)
+    }
+
+    /// Updates the in-memory session only (no disk I/O). Use during streaming UI updates.
+    func updateSessionInMemory(_ sessionId: String, update: (inout AgentSession) -> Void) {
         guard let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         update(&sessions[idx])
         sessions[idx].updatedAt = Date()
-        saveSessions()
+    }
+
+    /// Writes the current in-memory session to disk.
+    func persistSession(_ sessionId: String) {
+        guard let session = sessions.first(where: { $0.id == sessionId }) else { return }
+        saveSession(session)
     }
 
     // MARK: - Add Message to Session
-    func addMessage(_ message: ChatMessage, to sessionId: String) {
-        updateSession(sessionId) { session in
-            session.messages.append(message)
+    func addMessage(_ message: ChatMessage, to sessionId: String, persist: Bool = true) {
+        upsertMessage(message, to: sessionId, persist: persist)
+    }
+
+    func upsertMessage(_ message: ChatMessage, to sessionId: String, persist: Bool = true) {
+        let apply: (inout AgentSession) -> Void = { session in
+            if let index = session.messages.firstIndex(where: { $0.id == message.id }) {
+                session.messages[index] = message
+            } else {
+                session.messages.append(message)
+            }
+        }
+        if persist {
+            updateSession(sessionId, update: apply)
+        } else {
+            updateSessionInMemory(sessionId, update: apply)
         }
     }
 
@@ -136,29 +149,38 @@ class SessionManager: ObservableObject {
     }
 
     // MARK: - Set Running State
-    func setRunning(_ running: Bool, for sessionId: String) {
-        updateSession(sessionId) { session in
-            session.isRunning = running
+    func setRunning(_ running: Bool, for sessionId: String, persist: Bool = true) {
+        if persist {
+            updateSession(sessionId) { session in
+                session.isRunning = running
+            }
+        } else {
+            updateSessionInMemory(sessionId) { session in
+                session.isRunning = running
+            }
         }
     }
 
     // MARK: - Set Queued Turn Count
-    func setQueuedTurnCount(_ count: Int, for sessionId: String) {
-        updateSession(sessionId) { session in
-            session.queuedTurnCount = count
+    func setQueuedTurnCount(_ count: Int, for sessionId: String, persist: Bool = true) {
+        if persist {
+            updateSession(sessionId) { session in
+                session.queuedTurnCount = count
+            }
+        } else {
+            updateSessionInMemory(sessionId) { session in
+                session.queuedTurnCount = count
+            }
         }
     }
 
     // MARK: - Export Session to Individual File
     func exportSession(_ sessionId: String) -> URL? {
         guard let session = sessions.first(where: { $0.id == sessionId }) else { return nil }
-        let fileURL = storageURL.appendingPathComponent("\(sessionId).json")
+        let sessionDir = AppPathProvider.shared.sessionDirectory(sessionId)
+        let fileURL = URL(fileURLWithPath: (sessionDir as NSString).appendingPathComponent("session.json"))
         do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = .prettyPrinted
-            let data = try encoder.encode(session)
-            try data.write(to: fileURL, options: .atomic)
+            try storage.saveSessionSync(session)
             return fileURL
         } catch {
             self.error = "导出失败: \(error.localizedDescription)"
@@ -172,8 +194,7 @@ class SessionManager: ObservableObject {
             let toRemove = sessions.suffix(sessions.count - maxSessions)
             sessions = Array(sessions.prefix(maxSessions))
             for session in toRemove {
-                let file = storageURL.appendingPathComponent("\(session.id).json")
-                try? FileManager.default.removeItem(at: file)
+                try? storage.deleteSession(session.id)
             }
         }
     }

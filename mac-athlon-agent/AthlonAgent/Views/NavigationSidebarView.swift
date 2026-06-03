@@ -26,8 +26,9 @@ struct NavigationSidebarView: View {
                     .foregroundColor(colors.border)
             }
 
-            // Session history
+            // Session history — fills space between header and bottom actions
             sessionHistorySection
+                .frame(maxHeight: .infinity, alignment: .top)
 
             Divider()
                 .foregroundColor(colors.border)
@@ -35,6 +36,7 @@ struct NavigationSidebarView: View {
             // Bottom action buttons
             bottomActions
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(colors.panelAlt)
     }
 
@@ -71,9 +73,19 @@ struct NavigationSidebarView: View {
                 VStack(spacing: 2) {
                     if let path = appState.workspaceRootPath {
                         workspaceInfoRow(icon: "link", label: path)
+                    } else {
+                        workspaceInfoRow(icon: "folder.badge.questionmark", label: "未选择工作区")
                     }
                     workspaceInfoRow(icon: "doc.on.doc", label: "\(appState.workspaceFiles.count) 个文件")
-                    workspaceInfoRow(icon: "clock", label: "最后更新：\(timeAgo())")
+                    Button("选择工作区…") {
+                        pickWorkspaceFolder()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundColor(colors.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 4)
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
@@ -111,7 +123,9 @@ struct NavigationSidebarView: View {
             if isQueuedExpanded {
                 VStack(spacing: 2) {
                     ForEach(appState.queuedTurns) { turn in
-                        QueuedTurnRow(turn: turn)
+                        QueuedTurnRow(turn: turn) {
+                            appState.removeQueuedTurn(queueId: turn.id)
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -153,9 +167,10 @@ struct NavigationSidebarView: View {
                     }
                     .padding(.vertical, 4)
                 }
-                .frame(maxHeight: 400)
+                .frame(maxHeight: .infinity)
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: - Bottom Actions
@@ -264,14 +279,11 @@ struct NavigationSidebarView: View {
             // Group items
             ForEach(group.items) { item in
                 SessionRow(sessionId: item.id, title: item.title, workspace: nil,
-                           updatedAt: item.updatedAtText, isActive: item.isActive, isRunning: item.isRunning)
+                           updatedAt: item.updatedAtText, isActive: item.isActive, isRunning: item.isRunning,
+                           onDelete: { appState.deleteSession(item.id) })
+                    .environmentObject(appState)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 2)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        appState.activeSessionId = item.id
-                        appState.currentPage = .chat
-                    }
             }
         }
     }
@@ -311,8 +323,8 @@ struct NavigationSidebarView: View {
             .padding(.vertical, 8)
             .contentShape(Rectangle())
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.white.opacity(0.03))
+                RoundedRectangle(cornerRadius: LayoutMetrics.navButtonCornerRadius)
+                    .fill(colors.hoverNeutral.opacity(0.5))
             )
         }
         .buttonStyle(.plain)
@@ -327,72 +339,109 @@ struct NavigationSidebarView: View {
     private func timeAgo() -> String {
         "刚刚"
     }
+
+    private func pickWorkspaceFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择"
+        if panel.runModal() == .OK, let url = panel.url {
+            appState.setWorkspaceRoot(url.path)
+        }
+    }
 }
 
 // MARK: - Session Row
 struct SessionRow: View {
+    @EnvironmentObject var appState: AppState
     let sessionId: String
     let title: String
     let workspace: String?
     let updatedAt: String
     let isActive: Bool
     let isRunning: Bool
+    var onDelete: (() -> Void)?
     @State private var isHovered = false
+
+    private var colors: ThemeColors {
+        appState.theme == .dark ? .dark : .light
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            // Running indicator
             Circle()
-                .fill(isRunning ? Color(hex: "#6366F1") : Color.clear)
+                .fill(isRunning ? colors.danger : Color.clear)
                 .frame(width: 6, height: 6)
 
             Image(systemName: isRunning ? "circle.dotted" : "bubble.left")
                 .font(.system(size: 12))
-                .foregroundColor(isActive ? Color(hex: "#6366F1") : Color(hex: "#A1A1AA"))
+                .foregroundColor(isActive ? colors.navActiveText : colors.subtleText)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 12))
                     .lineLimit(1)
-                    .foregroundColor(isActive ? .white : Color(hex: "#D4D4D8"))
+                    .foregroundColor(isActive ? colors.navActiveText : colors.text)
                 if let ws = workspace, !ws.isEmpty {
                     Text(ws)
                         .font(.system(size: 10))
-                        .foregroundColor(Color(hex: "#71717A"))
+                        .foregroundColor(colors.disabledText)
                         .lineLimit(1)
                 }
             }
 
             Spacer()
 
-            Text(updatedAt)
-                .font(.system(size: 10))
-                .foregroundColor(Color(hex: "#52525B"))
+            if isHovered, onDelete != nil {
+                Button {
+                    onDelete?()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundColor(colors.danger)
+                }
+                .buttonStyle(.plain)
+                .help("删除会话")
+            } else {
+                Text(updatedAt)
+                    .font(.system(size: 10))
+                    .foregroundColor(colors.disabledText)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isActive
-                    ? Color(hex: "#6366F1").opacity(0.2)
-                    : (isHovered ? Color.white.opacity(0.05) : Color.clear))
+            RoundedRectangle(cornerRadius: LayoutMetrics.navButtonCornerRadius)
+                .fill(isActive ? colors.navActiveBg : (isHovered ? colors.hoverNeutral : Color.clear))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LayoutMetrics.navButtonCornerRadius)
+                        .stroke(isActive ? colors.selectionBorder.opacity(0.5) : Color.clear, lineWidth: 1)
+                )
         )
-        .onHover { h in isHovered = h }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            appState.activateSession(sessionId)
+        }
         .contextMenu {
-            Button("激活会话") {
-                // handled by parent
+            Button("打开") {
+                appState.activateSession(sessionId)
             }
-            Divider()
-            Button("删除会话", role: .destructive) {
-                // delete action
+            if let onDelete {
+                Divider()
+                Button("删除会话", role: .destructive) {
+                    onDelete()
+                }
             }
         }
+        .onHover { h in isHovered = h }
     }
 }
 
 // MARK: - Queued Turn Row
 struct QueuedTurnRow: View {
     let turn: QueuedTurn
+    var onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
@@ -409,6 +458,13 @@ struct QueuedTurnRow: View {
                     .font(.system(size: 9))
                     .foregroundColor(Color(hex: "#A1A1AA"))
             }
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(hex: "#71717A"))
+            }
+            .buttonStyle(.plain)
+            .help("移出队列")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)

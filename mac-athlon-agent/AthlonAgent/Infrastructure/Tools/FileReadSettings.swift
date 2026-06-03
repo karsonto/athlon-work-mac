@@ -1,0 +1,27 @@
+import Foundation
+
+struct FileReadSettings: Codable, Sendable {
+    var maxFileBytes: Int64 = 2 * 1024 * 1024
+    var defaultLineLimit: Int = 500
+    var maxLinesPerCall: Int = 2_000
+    var maxResponseChars: Int = 32_768
+    var maxLineChars: Int = 1_024
+    var countTotalLines: Bool = true
+}
+
+struct PlanSettings: Codable, Sendable {
+    var maxSubtasks: Int = 20
+    var planFileName: String = "plan.md"
+    var autoContinueEnabled: Bool = true
+    var maxAutoContinueRounds: Int = 20
+    var minOverviewChars: Int = 200
+    var minSubtaskDescriptionChars: Int = 40
+    var minSubtaskExpectedOutcomeChars: Int = 20
+}
+
+struct ToolPermissionSettings: Codable, Sendable {
+    var askBeforeEveryCommand: Bool = true
+    var fileScopePolicy: String = "AskOutsideWorkspace"
+    var commandAllowList: [String] = ["git", "dotnet", "python", "node", "npm", "swift", "xcodebuild"]
+    var commandDenyList: [String] = ["format", "rm -rf /", "mkfs"]
+}

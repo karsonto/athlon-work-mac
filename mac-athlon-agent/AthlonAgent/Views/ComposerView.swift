@@ -10,25 +10,26 @@ struct ComposerView: View {
     @State private var showAtCompletion: Bool = false
     @State private var atFilterText: String = ""
     @State private var atSelectedIndex: Int = 0
-    @State private var composerHeight: CGFloat = 48
+    @State private var textAreaHeight: CGFloat = LayoutMetrics.composerTextMinHeight
 
     private var colors: ThemeColors {
         appState.theme == .dark ? .dark : .light
     }
 
-    // Computed @-completion items
+    private var isComposerEmpty: Bool {
+        messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachedImages.isEmpty
+    }
+
     private var atCompletionItems: [(type: String, icon: String, text: String, detail: String)] {
         var items: [(type: String, icon: String, text: String, detail: String)] = []
 
-        // File items from workspace
-        for file in appState.workspaceFiles.prefix(15) {
+        for file in appState.workspaceFiles.prefix(30) {
             let name = file.name
             if atFilterText.isEmpty || name.localizedCaseInsensitiveContains(atFilterText) {
                 items.append(("文件", file.isDirectory ? "folder" : "doc", name, file.path))
             }
         }
 
-        // Skill items
         for skill in appState.skills {
             let name = skill.name
             if atFilterText.isEmpty || name.localizedCaseInsensitiveContains(atFilterText) {
@@ -36,44 +37,138 @@ struct ComposerView: View {
             }
         }
 
-        // Image files
-        for img in attachedImages {
-            let name = "@" + img.fileName
-            if atFilterText.isEmpty || name.localizedCaseInsensitiveContains(atFilterText) {
-                items.append(("图片", "photo", img.fileName, "已添加"))
-            }
-        }
-
-        return items
+        return items.prefix(30).map { $0 }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // @-Completion popup
             if showAtCompletion && !atCompletionItems.isEmpty {
                 atCompletionPopup
             }
 
-            Divider()
-                .foregroundColor(colors.border)
-
-            // File attachments
-            if !attachedFiles.isEmpty {
-                fileAttachmentsRow
+            HStack {
+                Spacer(minLength: 0)
+                composerDock
+                    .frame(maxWidth: LayoutMetrics.composerMaxWidth)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, LayoutMetrics.composerOuterPaddingHorizontal)
+            .padding(.vertical, LayoutMetrics.composerOuterPaddingVertical)
+        }
+        .onChange(of: messageText) { _, newValue in
+            handleAtTrigger(newValue)
+        }
+    }
 
-            // Image attachments
+    // MARK: - Composer Dock
+    private var composerDock: some View {
+        VStack(alignment: .leading, spacing: 10) {
             if !attachedImages.isEmpty {
                 imageAttachmentsRow
             }
 
-            // Main input area
-            mainInputArea
+            ComposerInputHost(
+                text: $messageText,
+                height: $textAreaHeight,
+                onSend: sendMessage,
+                minimumHeight: LayoutMetrics.composerTextMinHeight,
+                maximumHeight: LayoutMetrics.composerMaxHeight - 80,
+                textHex: appState.theme == .dark ? "#F4F4F5" : "#0F172A",
+                accentHex: appState.theme == .dark ? "#2563EB" : "#0284C7"
+            )
+            .frame(maxWidth: .infinity, minHeight: textAreaHeight, maxHeight: textAreaHeight)
+            .overlay(alignment: .topLeading) {
+                if isComposerEmpty {
+                    Text("Message Athlon — @ 文件 / 技能，Enter 发送")
+                        .font(.system(size: LayoutMetrics.composerFontSize))
+                        .foregroundColor(colors.disabledText)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Button(action: addImageAttachment) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(colors.subtleText)
+                        .frame(width: 36, height: 36)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(colors.hoverNeutral)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("添加图片")
+
+                Text(
+                    appState.composerStatusMessage.isEmpty
+                        ? "Enter 发送 · Shift+Enter 换行"
+                        : appState.composerStatusMessage
+                )
+                    .font(.system(size: 11))
+                    .foregroundColor(
+                        appState.composerStatusMessage.isEmpty ? colors.disabledText : colors.accent
+                    )
+                    .lineLimit(2)
+
+                Button(action: { appState.togglePlanMode() }) {
+                    Text(appState.interactionMode == .plan ? "Plan" : "Agent")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(appState.interactionMode == .plan ? colors.accent : colors.subtleText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(appState.interactionMode == .plan ? colors.accent.opacity(0.15) : colors.hoverNeutral)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(appState.interactionMode == .plan ? "Plan 模式：仅调研与写计划" : "Agent 模式：可执行修改")
+
+                Spacer()
+
+                if appState.isAgentRunning {
+                    Button(action: { appState.stopAgent() }) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: LayoutMetrics.sendButtonSize, height: LayoutMetrics.sendButtonSize)
+                            .background(Circle().fill(colors.danger))
+                    }
+                    .buttonStyle(.plain)
+                    .help("停止生成")
+                }
+
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: LayoutMetrics.sendButtonSize, height: LayoutMetrics.sendButtonSize)
+                        .background(
+                            Circle().fill(canSend ? colors.accent : colors.disabledText.opacity(0.4))
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .help("发送消息 (Enter)")
+            }
         }
-        .background(colors.panel)
-        .onChange(of: messageText) { _, newValue in
-            handleAtTrigger(newValue)
-        }
+        .padding(.horizontal, LayoutMetrics.composerInnerPaddingHorizontal)
+        .padding(.vertical, LayoutMetrics.composerInnerPaddingVertical)
+        .background(
+            RoundedRectangle(cornerRadius: LayoutMetrics.composerCornerRadius)
+                .fill(colors.composer)
+                .overlay(
+                    RoundedRectangle(cornerRadius: LayoutMetrics.composerCornerRadius)
+                        .stroke(colors.border, lineWidth: 1)
+                )
+        )
+    }
+
+    private var canSend: Bool {
+        !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachedImages.isEmpty
     }
 
     // MARK: - @-Completion Popup
@@ -87,7 +182,8 @@ struct ComposerView: View {
                             icon: item.icon,
                             text: item.text,
                             detail: item.detail,
-                            isSelected: index == atSelectedIndex
+                            isSelected: index == atSelectedIndex,
+                            colors: colors
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -99,40 +195,21 @@ struct ComposerView: View {
             }
             .frame(maxHeight: 240)
 
-            // Footer hint
             HStack {
                 Text("↑↓ 导航 · Enter 选择 · Esc 关闭")
                     .font(.system(size: 10))
-                    .foregroundColor(Color(hex: "#52525B"))
+                    .foregroundColor(colors.disabledText)
                 Spacer()
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
-            .background(Color(hex: "#1A1A1E"))
+            .background(colors.panelAlt)
         }
-        .background(Color(hex: "#18181B"))
-        .overlay(
-            Rectangle().fill(Color(hex: "#3F3F46")).frame(height: 1),
-            alignment: .bottom
-        )
+        .background(colors.panel)
+        .overlay(Rectangle().fill(colors.border).frame(height: 1), alignment: .bottom)
+        .padding(.horizontal, LayoutMetrics.composerOuterPaddingHorizontal)
     }
 
-    // MARK: - File Attachments Row
-    private var fileAttachmentsRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(attachedFiles, id: \.self) { file in
-                    FileChip(name: file) {
-                        attachedFiles.removeAll { $0 == file }
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-        .padding(.vertical, 6)
-    }
-
-    // MARK: - Image Attachments Row
     private var imageAttachmentsRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -142,141 +219,22 @@ struct ComposerView: View {
                     }
                 }
             }
-            .padding(.horizontal, 16)
-        }
-        .padding(.vertical, 6)
-    }
-
-    // MARK: - Main Input Area
-    private var mainInputArea: some View {
-        VStack(spacing: 0) {
-            // Markdown toolbar
-            MarkdownToolbar { snippet in
-                messageText += snippet
-            }
-
-            // Text input
-            HStack(alignment: .bottom, spacing: 8) {
-                // @ button
-                Button(action: { showAtCompletion.toggle() }) {
-                    Text("@")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(showAtCompletion ? Color.white : colors.accent)
-                        .frame(width: 28, height: 28)
-                        .background(
-                            Circle()
-                                .fill(showAtCompletion ? colors.accent : colors.accent.opacity(0.1))
-                        )
-                }
-                .buttonStyle(.plain)
-                .help("输入 @ 选择文件、技能或上下文 (⌘@)")
-
-                // Text editor (NSTextView wrapped for Enter handling)
-                ComposerTextView(
-                    text: $messageText,
-                    height: $composerHeight,
-                    onSend: sendMessage,
-                    minimumHeight: 48,
-                    maximumHeight: LayoutMetrics.composerMaxHeight
-                )
-                .frame(height: composerHeight)
-
-                // Send / Stop button
-                if appState.isAgentRunning {
-                    Button(action: { /* stop agent */ }) {
-                        Image(systemName: "stop.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundColor(Color(hex: "#EF4444"))
-                    }
-                    .buttonStyle(.plain)
-                    .help("停止生成")
-                } else {
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundColor(
-                                messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                && attachedImages.isEmpty
-                                ? colors.subtleText : colors.accent
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .keyboardShortcut(.return, modifiers: [])
-                    .help("发送消息 (Enter)")
-                    .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachedImages.isEmpty)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
-
-            // Bottom info bar
-            HStack {
-                // Image attachment button
-                Button(action: addImageAttachment) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "photo.badge.plus")
-                            .font(.system(size: 11))
-                        Text("添加图片")
-                            .font(.system(size: 10))
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(colors.subtleText)
-
-                // File attachment button
-                Button(action: addFileAttachment) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "doc.badge.plus")
-                            .font(.system(size: 11))
-                        Text("添加文件")
-                            .font(.system(size: 10))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(colors.subtleText)
-                    .padding(.leading, 8)
-                }
-
-                Spacer()
-
-                // Character count
-                if !messageText.isEmpty {
-                    Text("\(messageText.count) 字符")
-                        .font(.system(size: 10))
-                        .foregroundColor(colors.subtleText)
-                }
-
-                Text("Enter 发送 · Shift+Enter 换行 · ⌘@ 补全")
-                    .font(.system(size: 10))
-                    .foregroundColor(colors.subtleText)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 8)
         }
     }
 
-    // MARK: - @-Trigger Detection
     private func handleAtTrigger(_ text: String) {
-        // Find last @ position in current line
         guard let lastNewline = text.lastIndex(of: "\n") else {
-            // Single line: check from start
-            detectAtFrom(text, startIndex: text.startIndex)
+            detectAtFrom(String(text))
             return
         }
-
-        let afterNewline = text.index(after: lastNewline)
-        let currentLine = String(text[afterNewline...])
-        detectAtFrom(currentLine, startIndex: currentLine.startIndex)
+        detectAtFrom(String(text[text.index(after: lastNewline)...]))
     }
 
-    private func detectAtFrom(_ line: String, startIndex: String.Index) {
+    private func detectAtFrom(_ line: String) {
         if let lastAt = line.lastIndex(of: "@") {
-            // Check if @ is at word start (preceded by space or start of line)
             let beforeAt = line[..<lastAt]
             if beforeAt.isEmpty || beforeAt.last == " " || beforeAt.last == "\n" {
-                let afterAt = String(line[line.index(after: lastAt)...])
-                // Only show if filter is non-empty and not a space
-                atFilterText = afterAt
+                atFilterText = String(line[line.index(after: lastAt)...])
                 showAtCompletion = true
                 atSelectedIndex = 0
                 return
@@ -289,18 +247,15 @@ struct ComposerView: View {
     private func insertAtCompletion(at index: Int) {
         guard index < atCompletionItems.count else { return }
         let item = atCompletionItems[index]
-
-        // Replace @filterText with selected item
         if let lastAt = messageText.lastIndex(of: "@") {
             let prefix = String(messageText[..<lastAt])
-            messageText = prefix + "@" + item.text + " "
+            let token = item.type == "技能" ? "@skill:\(item.text)" : "@\(item.text)"
+            messageText = prefix + token + " "
         }
-
         showAtCompletion = false
         atFilterText = ""
     }
 
-    // MARK: - Actions
     private func sendMessage() {
         let text = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachedImages.isEmpty else { return }
@@ -313,39 +268,20 @@ struct ComposerView: View {
 
     private func addImageAttachment() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png, .jpeg, .heic, .webP]
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .webP, .gif]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
 
         if panel.runModal() == .OK {
             for url in panel.urls {
                 guard let data = try? Data(contentsOf: url) else { continue }
-                let attachment = ImageAttachment(
+                attachedImages.append(ImageAttachment(
                     id: UUID().uuidString,
                     fileName: url.lastPathComponent,
                     filePath: url,
                     thumbnailData: data,
                     fileSize: Int64(data.count)
-                )
-                attachedImages.append(attachment)
-            }
-        }
-    }
-
-    private func addFileAttachment() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.text, .sourceCode, .plainText, .data,
-                                       .init(filenameExtension: "md") ?? .text,
-                                       .init(filenameExtension: "json") ?? .text,
-                                       .init(filenameExtension: "yaml") ?? .text,
-                                       .init(filenameExtension: "yml") ?? .text,
-                                       .init(filenameExtension: "xml") ?? .text]
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-
-        if panel.runModal() == .OK {
-            for url in panel.urls {
-                attachedFiles.append(url.lastPathComponent)
+                ))
             }
         }
     }
@@ -358,10 +294,10 @@ struct AtCompletionRow: View {
     let text: String
     let detail: String
     let isSelected: Bool
+    let colors: ThemeColors
 
     var body: some View {
         HStack(spacing: 10) {
-            // Type badge
             Text(type)
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundColor(typeColor)
@@ -371,17 +307,17 @@ struct AtCompletionRow: View {
 
             Image(systemName: icon)
                 .font(.system(size: 12))
-                .foregroundColor(Color(hex: "#A1A1AA"))
+                .foregroundColor(colors.subtleText)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(text)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Color(hex: "#F4F4F5"))
+                    .foregroundColor(colors.text)
                     .lineLimit(1)
                 if !detail.isEmpty {
                     Text(detail)
                         .font(.system(size: 10))
-                        .foregroundColor(Color(hex: "#71717A"))
+                        .foregroundColor(colors.subtleText)
                         .lineLimit(1)
                 }
             }
@@ -391,20 +327,19 @@ struct AtCompletionRow: View {
             if isSelected {
                 Text("↩")
                     .font(.system(size: 10))
-                    .foregroundColor(Color(hex: "#6366F1"))
+                    .foregroundColor(colors.accent)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(isSelected ? Color(hex: "#6366F1").opacity(0.1) : Color.clear)
+        .background(isSelected ? colors.navActiveBg.opacity(0.5) : Color.clear)
     }
 
     private var typeColor: Color {
         switch type {
-        case "文件": return Color(hex: "#3B82F6")
-        case "技能": return Color(hex: "#A78BFA")
-        case "图片": return Color(hex: "#F59E0B")
-        default: return Color(hex: "#A1A1AA")
+        case "文件": return colors.fileBadgeText
+        case "技能": return colors.skillBadgeText
+        default: return colors.subtleText
         }
     }
 }
@@ -416,8 +351,7 @@ struct ImageAttachmentChip: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if let data = image.thumbnailData,
-               let nsImage = NSImage(data: data) {
+            if let data = image.thumbnailData, let nsImage = NSImage(data: data) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -453,12 +387,9 @@ struct ImageAttachmentChip: View {
         }
         .frame(height: 36)
         .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(Color(hex: "#1E1E24"))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(Color(hex: "#3F3F46"), lineWidth: 1)
-                )
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(hex: "#262628"))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: "#3F3F46"), lineWidth: 1))
         )
     }
 
@@ -466,148 +397,6 @@ struct ImageAttachmentChip: View {
         if bytes < 1024 { return "\(bytes) B" }
         if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
         return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
-    }
-}
-
-// MARK: - Composer NSViewRepresentable (NSTextView for Enter handling)
-struct ComposerTextView: NSViewRepresentable {
-    @Binding var text: String
-    @Binding var height: CGFloat
-    let onSend: () -> Void
-    let minimumHeight: CGFloat
-    let maximumHeight: CGFloat
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = false
-        scrollView.drawsBackground = false
-        scrollView.borderType = .noBorder
-
-        // Inset to remove default NSTextView padding
-        scrollView.contentInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
-
-        let textView = NSTextView()
-        textView.delegate = context.coordinator
-        textView.isRichText = false
-        textView.isEditable = true
-        textView.isSelectable = true
-        textView.drawsBackground = false
-        textView.font = NSFont.systemFont(ofSize: 13)
-        textView.textColor = NSColor(hex: "#F4F4F5")
-        textView.insertionPointColor = NSColor(hex: "#6366F1")
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainerInset = NSSize(width: 4, height: 4)
-        textView.textContainer?.lineFragmentPadding = 0
-
-        // Background styling
-        textView.wantsLayer = true
-        textView.layer?.backgroundColor = NSColor(hex: "#1A1A1E").cgColor
-        textView.layer?.cornerRadius = 8
-        textView.layer?.borderWidth = 1
-        textView.layer?.borderColor = NSColor(hex: "#3F3F46").cgColor
-
-        scrollView.documentView = textView
-        context.coordinator.textView = textView
-        context.coordinator.scrollView = scrollView
-
-        return scrollView
-    }
-
-    func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let textView = nsView.documentView as? NSTextView else { return }
-        context.coordinator.textView = textView
-        context.coordinator.scrollView = nsView
-
-        // Only update text if different from current (prevent loop)
-        if textView.string != text {
-            let selectedRange = textView.selectedRange()
-            textView.string = text
-            textView.selectedRange = selectedRange
-        }
-
-        // Update text color for dark/light
-        textView.textColor = NSColor(hex: "#F4F4F5")
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, height: $height, onSend: onSend, minimumHeight: minimumHeight, maximumHeight: maximumHeight)
-    }
-
-    class Coordinator: NSObject, NSTextViewDelegate {
-        @Binding var text: String
-        @Binding var height: CGFloat
-        let onSend: () -> Void
-        let minimumHeight: CGFloat
-        let maximumHeight: CGFloat
-        weak var textView: NSTextView?
-        weak var scrollView: NSScrollView?
-
-        init(text: Binding<String>, height: Binding<CGFloat>, onSend: @escaping () -> Void, minimumHeight: CGFloat, maximumHeight: CGFloat) {
-            self._text = text
-            self._height = height
-            self.onSend = onSend
-            self.minimumHeight = minimumHeight
-            self.maximumHeight = maximumHeight
-        }
-
-        func textDidChange(_ notification: Notification) {
-            guard let textView = textView else { return }
-            text = textView.string
-            updateHeight()
-        }
-
-        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                // Check for Shift+Enter (shift key down)
-                let flags = NSApp.currentEvent?.modifierFlags ?? []
-                if flags.contains(.shift) {
-                    // Allow default newline behavior
-                    return false
-                } else {
-                    // Enter = send
-                    onSend()
-                    return true
-                }
-            }
-            return false
-        }
-
-        private func updateHeight() {
-            guard let textView = textView, let scrollView = scrollView else { return }
-
-            // Calculate natural height
-            textView.sizeToFit()
-            let naturalHeight = max(textView.frame.height + 8, minimumHeight)
-            let clamped = min(naturalHeight, maximumHeight)
-
-            DispatchQueue.main.async {
-                self.height = clamped
-                // Enable vertical scrolling when maxed out
-                scrollView.hasVerticalScroller = naturalHeight > self.maximumHeight
-            }
-        }
-    }
-}
-
-// MARK: - NSColor Hex Helper
-extension NSColor {
-    convenience init(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        let a, r, g, b: UInt64
-        switch hex.count {
-        case 6:
-            (a, r, g, b) = (255, (int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)
-        case 8:
-            (a, r, g, b) = ((int >> 24) & 0xFF, (int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)
-        default:
-            (a, r, g, b) = (255, 0, 0, 0)
-        }
-        self.init(red: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: CGFloat(a) / 255)
     }
 }
 
@@ -633,7 +422,6 @@ struct RoundedCorner: Shape {
 
     func path(in rect: CGRect) -> Path {
         let path = CGMutablePath()
-
         let topLeft = corners.contains(.topLeft) ? radius : 0
         let topRight = corners.contains(.topRight) ? radius : 0
         let bottomLeft = corners.contains(.bottomLeft) ? radius : 0
@@ -641,22 +429,13 @@ struct RoundedCorner: Shape {
 
         path.move(to: CGPoint(x: rect.minX + topLeft, y: rect.minY))
         path.addLine(to: CGPoint(x: rect.maxX - topRight, y: rect.minY))
-        path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY),
-                    tangent2End: CGPoint(x: rect.maxX, y: rect.minY + topRight),
-                    radius: topRight)
+        path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY), tangent2End: CGPoint(x: rect.maxX, y: rect.minY + topRight), radius: topRight)
         path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - bottomRight))
-        path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.maxY),
-                    tangent2End: CGPoint(x: rect.maxX - bottomRight, y: rect.maxY),
-                    radius: bottomRight)
+        path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.maxY), tangent2End: CGPoint(x: rect.maxX - bottomRight, y: rect.maxY), radius: bottomRight)
         path.addLine(to: CGPoint(x: rect.minX + bottomLeft, y: rect.maxY))
-        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY),
-                    tangent2End: CGPoint(x: rect.minX, y: rect.maxY - bottomLeft),
-                    radius: bottomLeft)
+        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY), tangent2End: CGPoint(x: rect.minX, y: rect.maxY - bottomLeft), radius: bottomLeft)
         path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + topLeft))
-        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY),
-                    tangent2End: CGPoint(x: rect.minX + topLeft, y: rect.minY),
-                    radius: topLeft)
-
+        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY), tangent2End: CGPoint(x: rect.minX + topLeft, y: rect.minY), radius: topLeft)
         return Path(path)
     }
 }

@@ -1,0 +1,97 @@
+import Foundation
+
+/// Validates and normalizes paths within the active workspace.
+final class WorkspaceGuard {
+    private let workspaceService: WorkspaceService
+    private let settings: AppSettings
+    private let appPaths: AppPathProvider
+    var sessionRootPath: String?
+
+    init(
+        workspaceService: WorkspaceService,
+        settings: AppSettings,
+        appPaths: AppPathProvider = .shared
+    ) {
+        self.workspaceService = workspaceService
+        self.settings = settings
+        self.appPaths = appPaths
+    }
+
+    var hasConfiguredWorkspace: Bool { tryGetWorkspaceRoot() != nil }
+
+    func tryGetWorkspaceRoot() -> String? {
+        if let sessionRootPath, !sessionRootPath.isEmpty {
+            return URL(fileURLWithPath: sessionRootPath).standardizedFileURL.path
+        }
+        if let root = workspaceService.rootPath, !root.isEmpty {
+            return URL(fileURLWithPath: root).standardizedFileURL.path
+        }
+        if let configured = settings.workspaces.first(where: { !$0.rootPath.isEmpty }) {
+            return URL(fileURLWithPath: configured.rootPath).standardizedFileURL.path
+        }
+        return nil
+    }
+
+    func isInsideWorkspace(_ path: String) -> Bool {
+        guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let fullPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        return allowedRoots().contains { isPathUnderRoot(fullPath, rootPath: $0) }
+    }
+
+    func normalize(_ path: String, cwd: String? = nil) throws -> String {
+        guard let basePath = tryGetWorkspaceRoot() else {
+            throw ToolError.failed(
+                "Workspace not configured",
+                detail: "工作区尚未设定。请先在侧栏「配置」或设置页指定工作区目录。"
+            )
+        }
+
+        var normalized = ToolPathNormalizer.forModel(path)
+        normalized = ToolPathNormalizer.resolveRelativeToWorkspaceRoot(normalized, workspaceRoot: basePath)
+        let rooted: String
+        if normalized.hasPrefix("/") {
+            rooted = normalized
+        } else {
+            let base = (cwd ?? basePath) as NSString
+            rooted = base.appendingPathComponent(normalized)
+        }
+        return URL(fileURLWithPath: rooted).standardizedFileURL.path
+    }
+
+    func getIgnorePatterns() -> [String] {
+        if let root = tryGetWorkspaceRoot() {
+            let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+            if let workspace = settings.workspaces.first(where: {
+                !$0.rootPath.isEmpty
+                    && URL(fileURLWithPath: $0.rootPath).standardizedFileURL.path == normalizedRoot
+            }), let patterns = workspace.ignorePatterns, !patterns.isEmpty {
+                return patterns
+            }
+        }
+        return settings.workspaceIgnore.directoryNames
+    }
+
+    private func allowedRoots() -> [String] {
+        var roots: [String] = []
+        if let workspaceRoot = tryGetWorkspaceRoot() {
+            roots.append(workspaceRoot)
+        }
+        if !appPaths.rootPath.isEmpty {
+            roots.append(URL(fileURLWithPath: appPaths.rootPath).standardizedFileURL.path)
+        }
+        return roots
+    }
+
+    private func isPathUnderRoot(_ fullPath: String, rootPath: String) -> Bool {
+        guard !rootPath.isEmpty else { return false }
+        var normalizedRoot = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        while normalizedRoot.count > 1, normalizedRoot.hasSuffix("/") {
+            normalizedRoot.removeLast()
+        }
+        let normalizedPath = URL(fileURLWithPath: fullPath).standardizedFileURL.path
+        let root = normalizedRoot.lowercased()
+        let path = normalizedPath.lowercased()
+        if path == root { return true }
+        return path.hasPrefix(root + "/")
+    }
+}

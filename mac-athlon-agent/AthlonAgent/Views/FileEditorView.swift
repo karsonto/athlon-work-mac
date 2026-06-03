@@ -3,8 +3,9 @@ import SwiftUI
 // MARK: - File Editor View
 struct FileEditorView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selectedFile: String = ""
     @State private var fileContent: String = ""
+    @State private var loadError: String?
+    @State private var saveError: String?
 
     private var colors: ThemeColors {
         appState.theme == .dark ? .dark : .light
@@ -12,7 +13,6 @@ struct FileEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 Button("← 聊天") {
                     appState.currentPage = .chat
@@ -23,14 +23,28 @@ struct FileEditorView: View {
 
                 Spacer()
 
+                if appState.canBuildPlan, appState.editingFilePath == appState.planFilePathForEditor {
+                    Button("Build") {
+                        appState.buildPlan()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(colors.accent))
+                    .help("批准计划并开始执行")
+                }
+
                 Text(appState.editingFilePath ?? "文件编辑器")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(colors.text)
+                    .lineLimit(1)
 
                 Spacer()
 
                 Button("保存") {
-                    // Placeholder save
+                    saveFile()
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 12))
@@ -45,7 +59,20 @@ struct FileEditorView: View {
                 alignment: .bottom
             )
 
-            // Editor
+            if let loadError {
+                Text(loadError)
+                    .font(.system(size: 12))
+                    .foregroundColor(colors.toolFailureText)
+                    .padding(12)
+            }
+
+            if let saveError {
+                Text(saveError)
+                    .font(.system(size: 12))
+                    .foregroundColor(colors.toolFailureText)
+                    .padding(.horizontal, 12)
+            }
+
             TextEditor(text: $fileContent)
                 .font(.system(size: 13, design: .monospaced))
                 .scrollContentBackground(.hidden)
@@ -53,5 +80,32 @@ struct FileEditorView: View {
                 .background(colors.appBackground)
         }
         .background(colors.appBackground)
+        .onAppear { loadFile() }
+        .onChange(of: appState.editingFilePath) { _, _ in loadFile() }
+    }
+
+    private func loadFile() {
+        loadError = nil
+        saveError = nil
+        guard let path = appState.editingFilePath else {
+            fileContent = ""
+            return
+        }
+        if let content = appState.workspaceService.readFileContent(path: path) {
+            fileContent = content
+        } else {
+            loadError = "无法读取文件: \(path)"
+            fileContent = ""
+        }
+    }
+
+    private func saveFile() {
+        saveError = nil
+        guard let path = appState.editingFilePath else { return }
+        do {
+            try appState.workspaceService.writeFileContent(path: path, content: fileContent)
+        } catch {
+            saveError = "保存失败: \(error.localizedDescription)"
+        }
     }
 }

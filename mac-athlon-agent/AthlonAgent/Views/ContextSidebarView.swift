@@ -10,22 +10,37 @@ struct ContextSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            sidebarHeader("上下文")
+            sidebarHeader
 
             Divider()
                 .foregroundColor(colors.border)
 
-            ScrollView {
-                VStack(spacing: 16) {
-                    workspaceSection
-                    mcpSection
-                    skillsSection
+            GeometryReader { geo in
+                let planReserve: CGFloat = appState.plan == nil ? 0 : 140
+                let bodyHeight = max(geo.size.height - planReserve, 160)
+                let topHeight = min(max(bodyHeight * 0.42, 120), 360)
+
+                VStack(spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            skillsSection
+                            mcpSection
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                    }
+                    .frame(width: geo.size.width, height: topHeight)
+
+                    Divider()
+                        .foregroundColor(colors.border)
+
+                    workspaceBottomSection
+                        .frame(width: geo.size.width, height: bodyHeight - topHeight)
                 }
-                .padding(12)
+                .frame(width: geo.size.width, height: geo.size.height)
             }
             .frame(maxHeight: .infinity)
 
-            // Plan tracker toggle
             if let plan = appState.plan {
                 Divider()
                     .foregroundColor(colors.border)
@@ -34,54 +49,65 @@ struct ContextSidebarView: View {
         }
     }
 
-    // MARK: - Sections
-    private var workspaceSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "folder")
-                    .font(.system(size: 12))
-                Text("当前工作区")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-            }
-            .foregroundColor(colors.subtleText)
-
-            if let ws = appState.activeWorkspace {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(ws)
-                        .font(.system(size: 13))
-                        .foregroundColor(colors.text)
-                        .lineLimit(2)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6).fill(colors.panelAlt))
-            } else {
-                Text("未选择工作区")
-                    .font(.system(size: 13))
-                    .foregroundColor(colors.subtleText)
-            }
-
-            // File tree placeholder
-            fileTreePreview
+    private var sidebarHeader: some View {
+        HStack {
+            Text("上下文")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(colors.subtleText)
+                .textCase(.uppercase)
+            Spacer()
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
     }
 
-    private var fileTreePreview: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(appState.workspaceFiles.prefix(8)) { node in
-                HStack(spacing: 6) {
-                    Image(systemName: node.isDirectory ? "folder" : "doc")
-                        .font(.system(size: 10))
-                        .foregroundColor(colors.subtleText)
-                    Text(node.name)
+    private var workspaceBottomSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("工作区文件")
+                    .font(.system(size: 12))
+                    .foregroundColor(colors.subtleText)
+                Spacer()
+                Button(action: { appState.refreshWorkspace() }) {
+                    Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11))
-                        .foregroundColor(colors.text)
-                        .lineLimit(1)
                 }
+                .buttonStyle(.plain)
             }
+
+            Text(activeWorkspaceName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(colors.text)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(colors.panelAlt)
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(colors.border, lineWidth: 1)
+
+                ScrollView {
+                    WorkspaceFileTreeView(
+                        nodes: appState.workspaceService.fileTree,
+                        colors: colors,
+                        onOpenFile: { path in appState.openFileEditor(path: path) }
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(8)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.top, 4)
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var activeWorkspaceName: String {
+        if let ws = appState.activeWorkspace {
+            return (ws as NSString).lastPathComponent
+        }
+        return "未选择工作区"
     }
 
     private var mcpSection: some View {
@@ -89,7 +115,7 @@ struct ContextSidebarView: View {
             HStack {
                 Image(systemName: "server.rack")
                     .font(.system(size: 12))
-                Text("MCP 服务")
+                Text("MCP 服务器")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 Text("\(appState.mcpServers.count)")
@@ -108,6 +134,13 @@ struct ContextSidebarView: View {
                     .foregroundColor(colors.subtleText)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(colors.border, lineWidth: 1)
+                .background(RoundedRectangle(cornerRadius: 12).fill(colors.panelAlt))
+        )
     }
 
     private var skillsSection: some View {
@@ -134,6 +167,13 @@ struct ContextSidebarView: View {
                     .foregroundColor(colors.subtleText)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(colors.border, lineWidth: 1)
+                .background(RoundedRectangle(cornerRadius: 12).fill(colors.panelAlt))
+        )
     }
 
     private func planTrackerSection(_ plan: AgentPlan) -> some View {
@@ -165,18 +205,100 @@ struct ContextSidebarView: View {
         .padding(12)
         .background(colors.panelAlt)
     }
+}
 
-    @ViewBuilder
-    private func sidebarHeader(_ title: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(colors.subtleText)
-                .textCase(.uppercase)
-            Spacer()
+// MARK: - Right sidebar toggle glyph (WPF RightSidebarToggleIcon)
+struct RightSidebarToggleIcon: View {
+    let isPanelOpen: Bool
+
+    @Environment(\.themeColors) private var colors
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            RoundedRectangle(cornerRadius: 2.5)
+                .stroke(colors.subtleText, lineWidth: 1.15)
+                .frame(width: 16, height: 14)
+
+            RoundedRectangle(cornerRadius: 1)
+                .fill(colors.subtleText.opacity(isPanelOpen ? 1 : 0.35))
+                .frame(width: 4.5, height: 10)
+                .padding(.trailing, 2.5)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
+        .frame(width: 18, height: 18)
+    }
+}
+
+// MARK: - Expandable file tree
+struct WorkspaceFileTreeView: View {
+    let nodes: [WorkspaceNode]
+    let colors: ThemeColors
+    let onOpenFile: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if nodes.isEmpty {
+                Text("暂无文件")
+                    .font(.system(size: 11))
+                    .foregroundColor(colors.subtleText)
+            } else {
+                ForEach(nodes) { node in
+                    WorkspaceTreeNodeRow(node: node, depth: 0, colors: colors, onOpenFile: onOpenFile)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
+    }
+}
+
+struct WorkspaceTreeNodeRow: View {
+    @ObservedObject var node: WorkspaceNode
+    let depth: Int
+    let colors: ThemeColors
+    let onOpenFile: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                if node.isDirectory {
+                    Button(action: { node.isExpanded.toggle() }) {
+                        Image(systemName: node.isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9))
+                            .foregroundColor(colors.subtleText)
+                            .frame(width: 12)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Spacer().frame(width: 12)
+                }
+
+                Image(systemName: node.iconKind.systemName)
+                    .font(.system(size: 10))
+                    .foregroundColor(colors.subtleText)
+
+                Text(node.name)
+                    .font(.system(size: 11))
+                    .foregroundColor(colors.text)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onTapGesture {
+                        if node.isDirectory {
+                            node.isExpanded.toggle()
+                        } else {
+                            onOpenFile(node.path)
+                        }
+                    }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, CGFloat(depth) * 12)
+
+            if node.isDirectory, node.isExpanded, let children = node.children {
+                ForEach(children) { child in
+                    WorkspaceTreeNodeRow(node: child, depth: depth + 1, colors: colors, onOpenFile: onOpenFile)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

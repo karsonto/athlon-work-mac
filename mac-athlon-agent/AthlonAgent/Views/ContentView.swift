@@ -3,92 +3,90 @@ import SwiftUI
 // MARK: - Content View (3-Column Layout)
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
-    @State private var sidebarWidth: CGFloat = LayoutMetrics.sidebarDefaultWidth
-    @State private var contextWidth: CGFloat = LayoutMetrics.contextSidebarDefaultWidth
 
-    private var currentColors: ThemeColors {
+    private var colors: ThemeColors {
         appState.theme == .dark ? .dark : .light
     }
 
     var body: some View {
         ZStack {
-            currentColors.appBackground
+            colors.appBackground
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 TitleBarView()
                     .environmentObject(appState)
 
-                // 3-pane layout
                 GeometryReader { geo in
                     HStack(spacing: 0) {
-                        // Left sidebar
-                        NavigationSidebarView()
-                            .environmentObject(appState)
-                            .frame(width: sidebarWidth)
-                            .background(currentColors.panel)
+                        if appState.isNavigationSidebarVisible {
+                            NavigationSidebarView()
+                                .environmentObject(appState)
+                                .frame(width: appState.navigationSidebarWidth)
+                                .background(colors.panel)
 
-                        // Divider
-                        Rectangle()
-                            .fill(currentColors.border)
-                            .frame(width: 1)
+                            DraggableSidebarSplitter(edge: .navigation)
+                                .environmentObject(appState)
+                        }
 
-                        // Center content area
-                        contentArea
-                            .background(currentColors.chatBackground)
+                        VStack(spacing: 0) {
+                            contentArea
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .background(colors.chatBackground)
 
-                        // Right sidebar (conditional)
-                        if sidebarWidth + contextWidth < geo.size.width - 60 {
-                            Rectangle()
-                                .fill(currentColors.border)
-                                .frame(width: 1)
+                            if appState.currentPage == .chat || appState.currentPage == .welcome {
+                                StatusBarView()
+                                    .environmentObject(appState)
+                            }
+                        }
+
+                        if appState.isContextSidebarVisible {
+                            DraggableSidebarSplitter(edge: .context)
+                                .environmentObject(appState)
 
                             ContextSidebarView()
                                 .environmentObject(appState)
-                                .frame(width: contextWidth)
-                                .background(currentColors.panel)
+                                .frame(width: appState.contextSidebarWidth)
+                                .background(colors.panel)
                         }
                     }
+                    .onAppear {
+                        clampSidebarWidths(for: geo.size.width)
+                    }
+                    .onChange(of: geo.size.width) { _, width in
+                        clampSidebarWidths(for: width)
+                    }
                 }
-
-                StatusBarView()
-                    .environmentObject(appState)
             }
         }
         .frame(minWidth: 1100, minHeight: 720)
         .preferredColorScheme(appState.theme.colorScheme)
+        .environment(\.themeColors, colors)
+        .background(WindowConfigurator())
     }
 
-    // MARK: - Route-based Content
     @ViewBuilder
     private var contentArea: some View {
         switch appState.currentPage {
-        case .chat:
+        case .chat, .welcome:
             ChatPageView()
                 .environmentObject(appState)
         case .settings:
             SettingsPageView()
+                .environmentObject(appState)
         case .fileEditor:
             FileEditorView()
                 .environmentObject(appState)
-        case .welcome:
-            VStack(spacing: 16) {
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 48))
-                    .foregroundColor(currentColors.accent)
-                Text("Welcome to Athlon Agent")
-                    .font(.title2)
-                    .foregroundColor(currentColors.text)
-                Text("Start a new chat or open an existing session from the sidebar.")
-                    .font(.body)
-                    .foregroundColor(currentColors.subtleText)
-                Button("New Chat") {
-                    appState.createNewSession()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func clampSidebarWidths(for totalWidth: CGFloat) {
+        let minCenter: CGFloat = 400
+        let maxSidebars = max(totalWidth - minCenter, 0)
+        if appState.navigationSidebarWidth + appState.contextSidebarWidth > maxSidebars {
+            let ratio = maxSidebars / (appState.navigationSidebarWidth + appState.contextSidebarWidth)
+            appState.navigationSidebarWidth = max(LayoutMetrics.sidebarMinWidth, appState.navigationSidebarWidth * ratio)
+            appState.contextSidebarWidth = max(LayoutMetrics.contextSidebarMinWidth, appState.contextSidebarWidth * ratio)
         }
     }
 }

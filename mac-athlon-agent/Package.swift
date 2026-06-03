@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
@@ -6,14 +6,29 @@ let package = Package(
     platforms: [
         .macOS(.v14)
     ],
+    dependencies: [
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0")
+    ],
     targets: [
         .executableTarget(
             name: "AthlonAgent",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk")
+            ],
             path: "AthlonAgent",
             exclude: ["Info.plist"],
             resources: [
-                .process("Assets.xcassets")
+                .process("Assets.xcassets"),
+                .process("Resources")
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
             ]
+        ),
+        .testTarget(
+            name: "AthlonAgentTests",
+            dependencies: ["AthlonAgent"],
+            path: "Tests"
         )
     ]
 )

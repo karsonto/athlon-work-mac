@@ -1,22 +1,22 @@
 import SwiftUI
 
 // MARK: - Color Theme
+/// Semantic colors aligned with WPF DarkAppThemePalette / LightAppThemePalette.
 struct ThemeColors {
-    // Backgrounds
     let appBackground: Color
     let chrome: Color
     let panel: Color
     let panelAlt: Color
-    let chatBackground: Color
+    let chatBackgroundTop: Color
+    let chatBackgroundBottom: Color
 
-    // Bubbles
     let assistantBubble: Color
     let userBubble: Color
+    let userBubbleBorder: Color
+    let userBubbleText: Color
 
-    // Composer
     let composer: Color
 
-    // Tool call cards
     let toolThinkingBg: Color
     let toolThinkingBorder: Color
     let toolThinkingText: Color
@@ -27,15 +27,20 @@ struct ThemeColors {
     let toolFailureBorder: Color
     let toolFailureText: Color
 
-    // Text
     let text: Color
     let subtleText: Color
+    let disabledText: Color
     let accent: Color
+    let accentHover: Color
     let success: Color
     let danger: Color
     let border: Color
 
-    // Badge
+    let navActiveBg: Color
+    let navActiveText: Color
+    let hoverNeutral: Color
+    let selectionBorder: Color
+
     let fileBadgeBg: Color
     let fileBadgeBorder: Color
     let fileBadgeText: Color
@@ -43,70 +48,96 @@ struct ThemeColors {
     let skillBadgeBorder: Color
     let skillBadgeText: Color
 
+    var chatBackground: LinearGradient {
+        LinearGradient(
+            colors: [chatBackgroundTop, chatBackgroundBottom],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
     // MARK: - Dark Theme
     static let dark = ThemeColors(
-        appBackground: Color(hex: "#18181B"),
-        chrome: Color(hex: "#27272A"),
-        panel: Color(hex: "#1B1B1E"),
-        panelAlt: Color(hex: "#222227"),
-        chatBackground: Color(hex: "#18181B"),
-        assistantBubble: Color(hex: "#1E1E24"),
-        userBubble: Color(hex: "#1A3A5C"),
-        composer: Color(hex: "#1E1E24"),
-        toolThinkingBg: Color(hex: "#1A1825"),
-        toolThinkingBorder: Color(hex: "#4C1D95"),
-        toolThinkingText: Color(hex: "#C4B5FD"),
-        toolSuccessBg: Color(hex: "#0B2818"),
-        toolSuccessBorder: Color(hex: "#15803D"),
-        toolSuccessText: Color(hex: "#86EFAC"),
-        toolFailureBg: Color(hex: "#2D1B1B"),
-        toolFailureBorder: Color(hex: "#991B1B"),
-        toolFailureText: Color(hex: "#FCA5A5"),
+        appBackground: Color(hex: "#101012"),
+        chrome: Color(hex: "#18181B"),
+        panel: Color(hex: "#262628"),
+        panelAlt: Color(hex: "#2A2A2D"),
+        chatBackgroundTop: Color(hex: "#141416"),
+        chatBackgroundBottom: Color(hex: "#101012"),
+        assistantBubble: Color(hex: "#262628"),
+        userBubble: Color(hex: "#1E3A5F").opacity(0.86),
+        userBubbleBorder: Color(hex: "#2F5C8E"),
+        userBubbleText: Color(hex: "#DBEAFE"),
+        composer: Color(hex: "#2A2A2D"),
+        toolThinkingBg: Color(hex: "#1E1B2E"),
+        toolThinkingBorder: Color(hex: "#6D28D9"),
+        toolThinkingText: Color(hex: "#DDD6FE"),
+        toolSuccessBg: Color(hex: "#142A22"),
+        toolSuccessBorder: Color(hex: "#059669"),
+        toolSuccessText: Color(hex: "#6EE7B7"),
+        toolFailureBg: Color(hex: "#2A1418"),
+        toolFailureBorder: Color(hex: "#E11D48"),
+        toolFailureText: Color(hex: "#FDA4AF"),
         text: Color(hex: "#F4F4F5"),
         subtleText: Color(hex: "#A1A1AA"),
-        accent: Color(hex: "#6366F1"),
-        success: Color(hex: "#22C55E"),
-        danger: Color(hex: "#EF4444"),
+        disabledText: Color(hex: "#71717A"),
+        accent: Color(hex: "#2563EB"),
+        accentHover: Color(hex: "#1D4ED8"),
+        success: Color(hex: "#10B981"),
+        danger: Color(hex: "#E11D48"),
         border: Color(hex: "#3F3F46"),
-        fileBadgeBg: Color(hex: "#1E293B"),
-        fileBadgeBorder: Color(hex: "#334155"),
-        fileBadgeText: Color(hex: "#93C5FD"),
-        skillBadgeBg: Color(hex: "#1A1825"),
-        skillBadgeBorder: Color(hex: "#4C1D95"),
-        skillBadgeText: Color(hex: "#C4B5FD")
+        navActiveBg: Color(hex: "#1E3A5F"),
+        navActiveText: Color(hex: "#93C5FD"),
+        hoverNeutral: Color(hex: "#27272A"),
+        selectionBorder: Color(hex: "#3B82F6"),
+        fileBadgeBg: Color(hex: "#2A2A2D"),
+        fileBadgeBorder: Color(hex: "#3F3F46"),
+        fileBadgeText: Color(hex: "#A1A1AA"),
+        skillBadgeBg: Color(hex: "#1E1B2E"),
+        skillBadgeBorder: Color(hex: "#6D28D9"),
+        skillBadgeText: Color(hex: "#DDD6FE")
     )
 
     // MARK: - Light Theme
     static let light = ThemeColors(
-        appBackground: Color(hex: "#FAFAFA"),
-        chrome: Color(hex: "#F4F4F5"),
+        appBackground: Color(hex: "#F1F5F9"),
+        chrome: Color(hex: "#FFFFFF"),
         panel: Color(hex: "#FFFFFF"),
-        panelAlt: Color(hex: "#F4F4F5"),
-        chatBackground: Color(hex: "#FAFAFA"),
+        panelAlt: Color(hex: "#F8FAFC"),
+        chatBackgroundTop: Color(hex: "#F8FBFF"),
+        chatBackgroundBottom: Color(hex: "#F1F5F9"),
         assistantBubble: Color(hex: "#FFFFFF"),
-        userBubble: Color(hex: "#DBEAFE"),
+        userBubble: Color(hex: "#0284C7"),
+        userBubbleBorder: Color(hex: "#0284C7"),
+        userBubbleText: Color(hex: "#FFFFFF"),
         composer: Color(hex: "#FFFFFF"),
         toolThinkingBg: Color(hex: "#F5F3FF"),
-        toolThinkingBorder: Color(hex: "#C4B5FD"),
-        toolThinkingText: Color(hex: "#6D28D9"),
+        toolThinkingBorder: Color(hex: "#DDD6FE"),
+        toolThinkingText: Color(hex: "#4C1D95"),
         toolSuccessBg: Color(hex: "#ECFDF5"),
-        toolSuccessBorder: Color(hex: "#6EE7B7"),
-        toolSuccessText: Color(hex: "#065F46"),
-        toolFailureBg: Color(hex: "#FEF2F2"),
-        toolFailureBorder: Color(hex: "#FCA5A5"),
-        toolFailureText: Color(hex: "#991B1B"),
-        text: Color(hex: "#18181B"),
-        subtleText: Color(hex: "#71717A"),
-        accent: Color(hex: "#6366F1"),
-        success: Color(hex: "#22C55E"),
-        danger: Color(hex: "#EF4444"),
-        border: Color(hex: "#D4D4D8"),
-        fileBadgeBg: Color(hex: "#DBEAFE"),
-        fileBadgeBorder: Color(hex: "#93C5FD"),
-        fileBadgeText: Color(hex: "#1E40AF"),
+        toolSuccessBorder: Color(hex: "#059669"),
+        toolSuccessText: Color(hex: "#047857"),
+        toolFailureBg: Color(hex: "#FFF1F2"),
+        toolFailureBorder: Color(hex: "#E11D48"),
+        toolFailureText: Color(hex: "#BE123C"),
+        text: Color(hex: "#0F172A"),
+        subtleText: Color(hex: "#64748B"),
+        disabledText: Color(hex: "#94A3B8"),
+        accent: Color(hex: "#0284C7"),
+        accentHover: Color(hex: "#0369A1"),
+        success: Color(hex: "#059669"),
+        danger: Color(hex: "#E11D48"),
+        border: Color(hex: "#E2E8F0"),
+        navActiveBg: Color(hex: "#F0F9FF"),
+        navActiveText: Color(hex: "#0369A1"),
+        hoverNeutral: Color(hex: "#F8FAFC"),
+        selectionBorder: Color(hex: "#BAE6FD"),
+        fileBadgeBg: Color(hex: "#F8FAFC"),
+        fileBadgeBorder: Color(hex: "#E2E8F0"),
+        fileBadgeText: Color(hex: "#64748B"),
         skillBadgeBg: Color(hex: "#F5F3FF"),
-        skillBadgeBorder: Color(hex: "#C4B5FD"),
-        skillBadgeText: Color(hex: "#6D28D9")
+        skillBadgeBorder: Color(hex: "#DDD6FE"),
+        skillBadgeText: Color(hex: "#4C1D95")
     )
 }
 

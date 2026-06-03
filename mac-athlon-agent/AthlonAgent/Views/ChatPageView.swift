@@ -2,206 +2,204 @@ import SwiftUI
 
 // MARK: - Chat Page (Center Area)
 struct ChatPageView: View {
-    @EnvironmentObject var appState: AppState
     @State private var messageText: String = ""
-    @State private var showAtCompletion: Bool = false
+    @State private var attachedImages: [ImageAttachment] = []
     @State private var attachedFiles: [String] = []
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ChatMessagesArea()
+
+            ChatComposerArea(
+                messageText: $messageText,
+                attachedImages: $attachedImages,
+                attachedFiles: $attachedFiles
+            )
+        }
+    }
+}
+
+// MARK: - Messages (observes AppState)
+private struct ChatMessagesArea: View {
+    @EnvironmentObject var appState: AppState
 
     private var colors: ThemeColors {
         appState.theme == .dark ? .dark : .light
     }
 
+    private var hasMessages: Bool {
+        !appState.activeMessages.isEmpty
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            chatHeader
+            if hasMessages {
+                chatHeader
+            }
 
-            // Message list
-            messageList
+            ZStack {
+                if !hasMessages {
+                    emptyState
+                }
 
-            // Composer
-            composerBar
+                messageList
+                    .opacity(hasMessages ? 1 : 0)
+                    .allowsHitTesting(hasMessages)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    // MARK: - Chat Header
+    // MARK: - Session Toolbar
     private var chatHeader: some View {
-        HStack(spacing: 8) {
-            // Session title
-            VStack(alignment: .leading, spacing: 2) {
-                Text(appState.activeSessionTitle)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(colors.text)
-                if let ws = appState.activeSessionWorkspace {
-                    Text(ws)
-                        .font(.system(size: 10))
-                        .foregroundColor(colors.subtleText)
-                }
-            }
+        HStack(spacing: 12) {
+            Text(appState.activeSessionTitle)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(colors.text)
+                .lineLimit(1)
 
             Spacer()
 
-            // Plan indicator
             if appState.plan != nil {
                 PlanBadge()
             }
 
-            // Resume button
-            if appState.isAgentRunning {
-                Button("停止") {
-                    // Stop agent
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundColor(Color(hex: "#EF4444"))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color(hex: "#EF4444").opacity(0.1)))
+            Button("清空上下文") {
+                appState.clearContext()
             }
+            .disabled(appState.activeMessages.isEmpty || appState.isBusy)
+            .buttonStyle(.plain)
+            .font(.system(size: 12))
+            .foregroundColor(colors.subtleText)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(colors.border, lineWidth: 1)
+            )
+            .help("清空当前对话在模型中的可见历史")
 
-            // Context count badge
-            Text("\(appState.activeMessageCount) 消息")
-                .font(.system(size: 10))
-                .foregroundColor(colors.subtleText)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(colors.panelAlt))
+            Button(action: { appState.toggleContextSidebar() }) {
+                RightSidebarToggleIcon(isPanelOpen: appState.isContextSidebarVisible)
+            }
+            .buttonStyle(.plain)
+            .help(appState.isContextSidebarVisible ? "关闭右侧栏" : "打开右侧栏")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 20)
         .frame(height: LayoutMetrics.splitPaneHeaderHeight)
-        .background(colors.panel)
+        .background(colors.chrome)
         .overlay(
-            Rectangle().fill(colors.border).frame(height: 1),
+            Rectangle().fill(colors.border.opacity(0.6)).frame(height: 1),
             alignment: .bottom
         )
+    }
+
+    // MARK: - Empty State
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 48))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color(hex: "#7DD3FC"), colors.accent],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            Text("Start chatting with Athlon")
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundColor(colors.text)
+
+            Text("在下方输入问题，或使用技能与工具处理工作区文件。")
+                .font(.system(size: 14))
+                .foregroundColor(colors.subtleText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 520)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+        .allowsHitTesting(false)
     }
 
     // MARK: - Message List
     private var messageList: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(appState.activeMessages) { message in
-                        if message.isUser {
-                            UserMessageBubble(message: message)
-                        } else if message.isTool || message.isCompaction {
-                            ToolCallCard(message: message)
-                        } else {
-                            AssistantMessageBubble(message: message)
-                        }
+                LazyVStack(spacing: LayoutMetrics.messageSpacing) {
+                    ForEach(chatDisplayMessages) { message in
+                        messageRow(for: message)
                     }
                 }
-                .padding(.vertical, 8)
+                .padding(.horizontal, LayoutMetrics.chatScrollPaddingHorizontal)
+                .padding(.top, LayoutMetrics.chatScrollPaddingTop)
+                .padding(.bottom, LayoutMetrics.chatScrollPaddingBottom)
             }
             .onChange(of: appState.activeMessages.count) {
-                withAnimation {
-                    if let lastId = appState.activeMessages.last?.id {
-                        scrollProxy.scrollTo(lastId, anchor: .bottom)
-                    }
-                }
+                scrollToBottom(scrollProxy)
+            }
+            .onChange(of: appState.activeMessages.last?.content) {
+                scrollToBottom(scrollProxy)
             }
         }
     }
 
-    // MARK: - Composer Bar
-    private var composerBar: some View {
-        VStack(spacing: 0) {
-            // At-completion overlay (conditional)
-            if showAtCompletion {
-                AtCompletionPopup()
-                    .transition(.opacity)
-            }
-
-            Divider()
-                .foregroundColor(colors.border)
-
-            VStack(spacing: 8) {
-                // File attachments
-                if !attachedFiles.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(attachedFiles, id: \.self) { file in
-                                FileChip(name: file) {
-                                    attachedFiles.removeAll { $0 == file }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                }
-
-                // Text input area
-                HStack(alignment: .top, spacing: 8) {
-                    // @ button
-                    Button(action: { showAtCompletion.toggle() }) {
-                        Text("@")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(colors.accent)
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .background(Circle().fill(colors.accent.opacity(0.1)))
-                    .help("输入 @ 选择文件或上下文")
-
-                    // Text editor
-                    TextEditor(text: $messageText)
-                        .font(.system(size: 13))
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .frame(minHeight: 48, maxHeight: LayoutMetrics.composerMaxHeight)
-                        .background(colors.composer)
-                        .cornerRadius(8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(colors.border, lineWidth: 1)
-                        )
-
-                    // Send button
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundColor(
-                                messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? colors.subtleText : colors.accent
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-
-                // Bottom info bar
-                HStack {
-                    // Image attachment button
-                    Button(action: {}) {
-                        Image(systemName: "photo.badge.plus")
-                            .font(.system(size: 11))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(colors.subtleText)
-
-                    Spacer()
-
-                    Text("Enter 发送 · Shift+Enter 换行")
-                        .font(.system(size: 10))
-                        .foregroundColor(colors.subtleText)
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
-            }
-            .background(colors.panel)
+    @ViewBuilder
+    private func messageRow(for message: ChatMessage) -> some View {
+        if message.isUser {
+            UserMessageBubble(message: message)
+                .environmentObject(appState)
+        } else if message.isCompaction {
+            CompactionMessageCard(message: message)
+        } else if message.isTool {
+            ToolCallCard(message: message)
+                .environmentObject(appState)
+        } else if shouldShowAssistantBubble(message) {
+            AssistantMessageBubble(message: message)
+                .environmentObject(appState)
         }
     }
 
-    // MARK: - Actions
-    private func sendMessage() {
-        let text = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        appState.sendMessage(text)
-        messageText = ""
-        attachedFiles = []
+    private var chatDisplayMessages: [ChatMessage] {
+        let pinId = appState.isAgentRunning ? appState.pinnedAssistantMessageId : nil
+        return ChatTimelineOrder.orderForDisplay(appState.activeMessages, pinToEndMessageId: pinId)
+            .filter(\.shouldShowInChatTimeline)
+    }
+
+    private func shouldShowAssistantBubble(_ message: ChatMessage) -> Bool {
+        message.shouldShowInChatTimeline
+            && (message.isStreaming || message.hasReasoning || message.hasDisplayContent)
+    }
+
+    private func scrollToBottom(_ scrollProxy: ScrollViewProxy) {
+        guard let lastId = chatDisplayMessages.last?.id else { return }
+        withAnimation(.easeOut(duration: 0.2)) {
+            scrollProxy.scrollTo(lastId, anchor: .bottom)
+        }
+    }
+}
+
+// MARK: - Composer host (stable identity — not tied to message stream updates)
+private struct ChatComposerArea: View {
+    @EnvironmentObject var appState: AppState
+    @Binding var messageText: String
+    @Binding var attachedImages: [ImageAttachment]
+    @Binding var attachedFiles: [String]
+
+    private var colors: ThemeColors {
+        appState.theme == .dark ? .dark : .light
+    }
+
+    var body: some View {
+        ComposerView(
+            messageText: $messageText,
+            attachedImages: $attachedImages,
+            attachedFiles: $attachedFiles
+        )
+        .environmentObject(appState)
+        .id("chat-composer")
+        .layoutPriority(1)
+        .background(colors.chatBackgroundBottom)
     }
 }
 
@@ -216,8 +214,9 @@ struct PlanBadge: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .foregroundColor(Color(hex: "#C4B5FD"))
-        .background(Capsule().fill(Color(hex: "#4C1D95").opacity(0.2)))
+        .foregroundColor(Color(hex: "#DDD6FE"))
+        .background(Capsule().fill(Color(hex: "#1E1B2E")))
+        .overlay(Capsule().stroke(Color(hex: "#6D28D9"), lineWidth: 1))
     }
 }
 
@@ -241,23 +240,10 @@ struct FileChip: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .foregroundColor(Color(hex: "#93C5FD"))
-        .background(RoundedRectangle(cornerRadius: 4)
-            .fill(Color(hex: "#1E293B"))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color(hex: "#334155"), lineWidth: 1)))
-    }
-}
-
-// MARK: - At-Completion Stub
-struct AtCompletionPopup: View {
-    var body: some View {
-        VStack {
-            Text("@ 文件 · @ 上下文")
-                .font(.system(size: 12))
-                .foregroundColor(Color(hex: "#A1A1AA"))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .background(Color(hex: "#1E1E24"))
-        .overlay(Rectangle().fill(Color(hex: "#3F3F46")).frame(height: 1), alignment: .bottom)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(hex: "#1E3A5F").opacity(0.5))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: "#2F5C8E"), lineWidth: 1))
+        )
     }
 }

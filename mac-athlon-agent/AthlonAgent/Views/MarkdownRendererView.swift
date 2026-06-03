@@ -1,14 +1,20 @@
 import SwiftUI
 import WebKit
 
-// MARK: - Markdown Renderer (WebKit-based)
+// MARK: - Markdown Renderer (WebKit-based, auto height — WPF MaxContentHeight=0)
 struct MarkdownRendererView: NSViewRepresentable {
     let markdownText: String
     let isDarkTheme: Bool
+    @Binding var contentHeight: CGFloat
 
-    init(_ markdownText: String, isDarkTheme: Bool = true) {
+    init(_ markdownText: String, isDarkTheme: Bool = true, contentHeight: Binding<CGFloat>) {
         self.markdownText = markdownText
         self.isDarkTheme = isDarkTheme
+        _contentHeight = contentHeight
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(contentHeight: $contentHeight)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -21,70 +27,96 @@ struct MarkdownRendererView: NSViewRepresentable {
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = context.coordinator
         webView.allowsMagnification = false
-        webView.isInspectable = true
-
-        if #available(macOS 14.0, *) {
-            webView.isInspectable = true
-        }
 
         context.coordinator.webView = webView
-        updateHTML(in: webView)
+        Self.configureScrollBehavior(for: webView)
+        Self.loadHTML(in: webView, markdownText: markdownText, isDarkTheme: isDarkTheme, coordinator: context.coordinator)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.webView = webView
-        updateHTML(in: webView)
-    }
-
-    private func updateHTML(in webView: WKWebView) {
-        let html = buildHTML(markdownText, isDark: isDarkTheme)
-        webView.loadHTMLString(html, baseURL: nil)
-
-        // Re-inject mermaid after load
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            webView.evaluateJavaScript("""
-                if (typeof mermaid !== 'undefined') {
-                    mermaid.run({ querySelector: '.mermaid' });
-                }
-            """, completionHandler: nil)
+        Self.configureScrollBehavior(for: webView)
+        if context.coordinator.lastLoadedMarkdown != markdownText
+            || context.coordinator.lastLoadedDarkTheme != isDarkTheme {
+            Self.loadHTML(in: webView, markdownText: markdownText, isDarkTheme: isDarkTheme, coordinator: context.coordinator)
         }
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(markdownText: markdownText, isDarkTheme: isDarkTheme)
+    static func configureScrollBehavior(for webView: WKWebView) {
+        guard let scrollView = webView.enclosingScrollView else { return }
+        scrollView.hasVerticalScroller = false
+        scrollView.verticalScrollElasticity = .none
+        scrollView.autohidesScrollers = true
     }
 
-    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-        var markdownText: String
-        var isDarkTheme: Bool
-        weak var webView: WKWebView?
+    static func loadHTML(
+        in webView: WKWebView,
+        markdownText: String,
+        isDarkTheme: Bool,
+        coordinator: Coordinator
+    ) {
+        coordinator.lastLoadedMarkdown = markdownText
+        coordinator.lastLoadedDarkTheme = isDarkTheme
+        let html = buildHTML(markdownText, isDark: isDarkTheme)
+        webView.loadHTMLString(html, baseURL: Bundle.main.resourceURL)
+    }
 
-        init(markdownText: String, isDarkTheme: Bool) {
-            self.markdownText = markdownText
-            self.isDarkTheme = isDarkTheme
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        @Binding var contentHeight: CGFloat
+        weak var webView: WKWebView?
+        var lastLoadedMarkdown: String?
+        var lastLoadedDarkTheme: Bool?
+
+        init(contentHeight: Binding<CGFloat>) {
+            _contentHeight = contentHeight
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            if message.name == "mermaidReady" {
-                // Mermaid initialized
+            if message.name == "mermaidReady", let webView {
+                remeasureHeight(in: webView)
             }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Post-process: dynamically set height for sizing
-            webView.evaluateJavaScript("document.body.scrollHeight") { result, _ in
-                guard let height = result as? CGFloat, height > 0 else { return }
-                // Height is auto-managed by SwiftUI layout
-            }
-
-            // Run mermaid
+            MarkdownRendererView.configureScrollBehavior(for: webView)
             webView.evaluateJavaScript("""
                 if (typeof mermaid !== 'undefined') {
                     mermaid.run({ querySelector: '.mermaid' });
                 }
             """, completionHandler: nil)
+            remeasureHeight(in: webView)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self, weak webView] in
+                guard let self, let webView else { return }
+                self.remeasureHeight(in: webView)
+            }
         }
+
+        private func remeasureHeight(in webView: WKWebView) {
+            webView.evaluateJavaScript(Self.contentHeightScript) { [weak self] result, _ in
+                guard let self else { return }
+                let measured: CGFloat
+                if let value = result as? Double {
+                    measured = CGFloat(value)
+                } else if let value = result as? CGFloat {
+                    measured = value
+                } else {
+                    return
+                }
+                guard measured > 0 else { return }
+                DispatchQueue.main.async {
+                    self.contentHeight = measured
+                }
+            }
+        }
+
+        private static let contentHeightScript = """
+        Math.max(
+            document.body.scrollHeight,
+            document.documentElement.scrollHeight,
+            document.getElementById('content')?.scrollHeight || 0
+        )
+        """
     }
 }
 
@@ -103,7 +135,7 @@ private func buildHTML(_ markdown: String, isDark: Bool) -> String {
     \(theme)
     \(markdownStyles)
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script src="mermaid.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
         mermaid.initialize({
@@ -154,6 +186,9 @@ html, body {
     font-size: 13px;
     line-height: 1.6;
     padding: 8px 0;
+    overflow-x: hidden;
+    overflow-y: hidden;
+    height: auto;
 }
 a { color: #6366F1; text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -205,6 +240,9 @@ html, body {
     font-size: 13px;
     line-height: 1.6;
     padding: 8px 0;
+    overflow-x: hidden;
+    overflow-y: hidden;
+    height: auto;
 }
 a { color: #4F46E5; text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -293,20 +331,28 @@ pre code {
 struct MarkdownContent: View {
     let text: String
     let isDarkTheme: Bool
+    @State private var contentHeight: CGFloat = 32
 
     var body: some View {
-        if text.contains("```mermaid") {
-            MarkdownRendererView(text, isDarkTheme: isDarkTheme)
-                .frame(minHeight: 120)
-        } else if hasMarkdownSyntax(text) {
-            MarkdownRendererView(text, isDarkTheme: isDarkTheme)
-                .frame(minHeight: 20)
-        } else {
-            // Plain text fallback
-            Text(text)
-                .font(.system(size: 13))
-                .textSelection(.enabled)
+        Group {
+            if usesWebKitRenderer {
+                MarkdownRendererView(text, isDarkTheme: isDarkTheme, contentHeight: $contentHeight)
+                    .frame(height: max(contentHeight, 24))
+            } else {
+                Text(text)
+                    .font(.system(size: 13))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: text) { _, _ in
+            contentHeight = 32
+        }
+    }
+
+    private var usesWebKitRenderer: Bool {
+        text.contains("```mermaid") || hasMarkdownSyntax(text)
     }
 
     private func hasMarkdownSyntax(_ text: String) -> Bool {
