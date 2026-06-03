@@ -26,6 +26,12 @@ enum SessionWriteLock {
         }
         return locks[sessionId]!
     }
+
+    static func removeLock(for sessionId: String) {
+        registryLock.lock()
+        locks.removeValue(forKey: sessionId)
+        registryLock.unlock()
+    }
 }
 
 enum SessionMarkdownWriter {
@@ -147,6 +153,7 @@ final class FileStorageService: CompactionStorageProviding, @unchecked Sendable 
             try FileManager.default.removeItem(atPath: sessionDir)
         }
         removeIndexEntry(sessionId: sessionId)
+        SessionWriteLock.removeLock(for: sessionId)
     }
 
     func appendConversationMessageSync(sessionId: String, message: ChatMessage) throws {
