@@ -32,9 +32,6 @@ struct ExecuteCommandTool: AgentTool {
 
     func invoke(arguments: [String: String]) async throws -> String {
         let command = try ToolArguments.required(arguments, name: "command", tool: name)
-        for deny in permissions.commandDenyList where command.localizedCaseInsensitiveContains(deny) {
-            throw ToolError.denied("Command denied: \(command)")
-        }
         if !permissions.commandAllowList.isEmpty {
             let allowed = permissions.commandAllowList.contains { prefix in
                 let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

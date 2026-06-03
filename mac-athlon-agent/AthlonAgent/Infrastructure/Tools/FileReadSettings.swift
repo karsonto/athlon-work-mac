@@ -23,5 +23,5 @@ struct ToolPermissionSettings: Codable, Sendable {
     var askBeforeEveryCommand: Bool = true
     var fileScopePolicy: String = "AskOutsideWorkspace"
     var commandAllowList: [String] = ["git", "dotnet", "python", "node", "npm", "swift", "xcodebuild"]
-    var commandDenyList: [String] = ["format", "rm -rf /", "mkfs"]
+    var commandDenyList: [String] = ["rm -rf", "rm -r", "rm --recursive", "mkfs", "dd if=", "format"]
 }

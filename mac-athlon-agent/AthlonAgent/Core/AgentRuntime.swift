@@ -296,10 +296,18 @@ final class AgentRuntime: @unchecked Sendable {
     }
 
     /// Built-in tools run without prompts; `execute_command` can opt in via settings.
-    private func shouldRequestToolApproval(toolName: String) -> Bool {
+    /// Commands matching `commandDenyList` always require approval regardless of `askBeforeEveryCommand`.
+    private func shouldRequestToolApproval(toolName: String, arguments: [String: String] = [:]) -> Bool {
         if BuiltInTools.isBuiltIn(toolName) {
-            return toolName.caseInsensitiveCompare("execute_command") == .orderedSame
-                && settings.toolPermissions.askBeforeEveryCommand
+            guard toolName.caseInsensitiveCompare("execute_command") == .orderedSame else { return false }
+            if let command = arguments["command"] {
+                for deny in settings.toolPermissions.commandDenyList {
+                    if command.localizedCaseInsensitiveContains(deny) {
+                        return true
+                    }
+                }
+            }
+            return settings.toolPermissions.askBeforeEveryCommand
         }
         return toolRouter.requiresApproval(toolName: toolName)
     }
@@ -330,7 +338,7 @@ final class AgentRuntime: @unchecked Sendable {
         )
 
         do {
-            if shouldRequestToolApproval(toolName: toolCall.name) {
+            if shouldRequestToolApproval(toolName: toolCall.name, arguments: args) {
                 let capturedArgs = args
                 let approved = await MainActor.run {
                     ToolApprovalGate.requestApproval(
