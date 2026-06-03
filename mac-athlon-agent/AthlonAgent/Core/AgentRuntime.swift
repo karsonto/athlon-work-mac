@@ -197,6 +197,8 @@ final class AgentRuntime: @unchecked Sendable {
                 )
             }
         }
+
+        try? await storage.saveSession(workingSession)
     }
 
     private func completeWithOverflowRetry(
@@ -454,7 +456,6 @@ final class AgentRuntime: @unchecked Sendable {
 
     private func persistMessage(session: AgentSession, message: ChatMessage) async {
         try? await storage.appendConversationMessage(sessionId: session.id, message: message)
-        try? await storage.saveSession(session)
     }
 
     private static func hasCompactionStructureChange(session: AgentSession, messageIdsBefore: Set<String>) -> Bool {
