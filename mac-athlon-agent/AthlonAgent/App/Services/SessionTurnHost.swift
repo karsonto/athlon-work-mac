@@ -1,4 +1,15 @@
 import Foundation
+import os.lock
+
+/// A simple os_unfair_lock wrapper that is safe to use from async Swift 6 contexts.
+final class Lock: @unchecked Sendable {
+    private var _lock = os_unfair_lock()
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return try body()
+    }
+}
 
 struct SessionTurnRequest {
     let sessionId: String
@@ -33,7 +44,7 @@ final class SessionTurnHost {
     private let settingsProvider: () -> AgentTurnSettings
     private let executor: TurnExecutor
     private let queue = SessionTurnQueue()
-    private let startGate = NSLock()
+    private let startGate = Lock()
     private var runners: [String: SessionTurnRunner] = [:]
 
     var onTurnCompleted: ((SessionTurnCompletedEvent) -> Void)?
@@ -55,34 +66,29 @@ final class SessionTurnHost {
     }
 
     func tryStart(_ request: SessionTurnRequest) -> String? {
-        startGate.lock()
-        defer { startGate.unlock() }
+        startGate.withLock {
+            if runners[request.sessionId] != nil {
+                return "当前对话正在生成，请等待完成或先停止。"
+            }
+            if runners.count >= Self.maxConcurrentTurns {
+                return "已有 3 个对话在生成，请等待或停止其中一个。"
+            }
 
-        if runners[request.sessionId] != nil {
-            return "当前对话正在生成，请等待完成或先停止。"
+            let timeout = settingsProvider().resolveTurnTimeout()
+            let runner = SessionTurnRunner(host: self, request: request, timeout: timeout)
+            runners[request.sessionId] = runner
+            onTurnStateChanged?(request.sessionId)
+            runner.start()
+            return nil
         }
-        if runners.count >= Self.maxConcurrentTurns {
-            return "已有 3 个对话在生成，请等待或停止其中一个。"
-        }
-
-        let timeout = settingsProvider().resolveTurnTimeout()
-        let runner = SessionTurnRunner(host: self, request: request, timeout: timeout)
-        runners[request.sessionId] = runner
-        onTurnStateChanged?(request.sessionId)
-        runner.start()
-        return nil
     }
 
     func isRunning(_ sessionId: String) -> Bool {
-        startGate.lock()
-        defer { startGate.unlock() }
-        return runners[sessionId] != nil
+        startGate.withLock { runners[sessionId] != nil }
     }
 
     func runningSessionIds() -> [String] {
-        startGate.lock()
-        defer { startGate.unlock() }
-        return Array(runners.keys)
+        startGate.withLock { Array(runners.keys) }
     }
 
     func enqueue(_ payload: QueuedTurnPayload) {
@@ -119,20 +125,14 @@ final class SessionTurnHost {
     }
 
     func cancel(sessionId: String) {
-        startGate.lock()
-        let runner = runners[sessionId]
-        startGate.unlock()
+        let runner = startGate.withLock { runners[sessionId] }
         runner?.cancel()
     }
 
     /// Removes the runner immediately so a new message can start without queuing (WPF `Stop` + fast unwind).
     func abortTurn(sessionId: String) -> SessionTurnRequest? {
-        startGate.lock()
-        guard let runner = runners.removeValue(forKey: sessionId) else {
-            startGate.unlock()
-            return nil
-        }
-        startGate.unlock()
+        let runner = startGate.withLock { runners.removeValue(forKey: sessionId) }
+        guard let runner else { return nil }
         runner.cancel()
         onTurnStateChanged?(sessionId)
         return runner.turnRequest
@@ -140,10 +140,7 @@ final class SessionTurnHost {
 
     /// Returns false when the runner was already removed (e.g. user stop via `abortTurn`).
     private func consumeRunnerFinish(for runner: SessionTurnRunner) -> Bool {
-        startGate.lock()
-        let removed = runners.removeValue(forKey: runner.sessionId) != nil
-        startGate.unlock()
-        return removed
+        startGate.withLock { runners.removeValue(forKey: runner.sessionId) != nil }
     }
 
     private func notifyTurnCompleted(
@@ -170,16 +167,12 @@ final class SessionTurnHost {
     func dropSession(_ sessionId: String) {
         cancel(sessionId: sessionId)
         clearQueue(sessionId: sessionId)
-        startGate.lock()
-        runners.removeValue(forKey: sessionId)
-        startGate.unlock()
+        startGate.withLock { runners.removeValue(forKey: sessionId) }
         onTurnStateChanged?(sessionId)
     }
 
     func cancelAll() {
-        startGate.lock()
-        let all = Array(runners.values)
-        startGate.unlock()
+        let all = startGate.withLock { Array(runners.values) }
         all.forEach { $0.cancel() }
     }
 
@@ -189,18 +182,14 @@ final class SessionTurnHost {
         clearAllQueues()
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            startGate.lock()
-            let active = !runners.isEmpty
-            startGate.unlock()
-            if !active { return }
+            let active = startGate.withLock { runners.isEmpty }
+            if active { return }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
     }
 
     func hasActiveWork() -> Bool {
-        startGate.lock()
-        let running = !runners.isEmpty
-        startGate.unlock()
+        let running = startGate.withLock { !runners.isEmpty }
         return running || queue.hasAnyQueuedTurns()
     }
 

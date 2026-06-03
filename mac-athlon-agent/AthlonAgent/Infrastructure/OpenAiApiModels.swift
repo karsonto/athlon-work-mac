@@ -7,7 +7,7 @@ import Foundation
 
 /// Recursive JSON value enum that enables `JSONEncoder` to work with
 /// `[String: Any]` dictionaries containing arbitrary nesting.
-indirect enum JsonValue: Encodable {
+indirect enum JsonValue: Codable {
     case string(String)
     case number(Double)
     case integer(Int)
@@ -25,6 +25,30 @@ indirect enum JsonValue: Encodable {
         case let v as [Any]:         self = .array(v.map(JsonValue.init))
         case let v as [String: Any]: self = .object(v.mapValues(JsonValue.init))
         default:                     self = .null
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let v = try? container.decode(String.self) {
+            self = .string(v)
+        } else if let v = try? container.decode(Int.self) {
+            self = .integer(v)
+        } else if let v = try? container.decode(Double.self) {
+            self = .number(v)
+        } else if let v = try? container.decode(Bool.self) {
+            self = .bool(v)
+        } else if container.decodeNil() {
+            self = .null
+        } else if let v = try? container.decode([JsonValue].self) {
+            self = .array(v)
+        } else if let v = try? container.decode([String: JsonValue].self) {
+            self = .object(v)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "JsonValue: unsupported JSON value type"
+            )
         }
     }
 

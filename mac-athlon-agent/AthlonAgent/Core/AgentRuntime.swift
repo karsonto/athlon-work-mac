@@ -253,7 +253,7 @@ final class AgentRuntime: @unchecked Sendable {
         frozenPrompt: FrozenSystemPrompt,
         tools: [ToolDefinition]
     ) async throws -> (session: AgentSession, response: AgentModelResponse) {
-        var updated = await runPreCompletionPipeline(
+        let updated = await runPreCompletionPipeline(
             session: session,
             callbacks: callbacks,
             options: .forceCompact
@@ -329,10 +329,11 @@ final class AgentRuntime: @unchecked Sendable {
 
         do {
             if shouldRequestToolApproval(toolName: toolCall.name) {
+                let capturedArgs = args
                 let approved = await MainActor.run {
                     ToolApprovalGate.requestApproval(
                         toolName: toolCall.name,
-                        arguments: args,
+                        arguments: capturedArgs,
                         askBeforeEveryCommand: true
                     )
                 }
@@ -404,7 +405,7 @@ final class AgentRuntime: @unchecked Sendable {
             parentMessageId: parentMessageId,
             toolCallId: toolCall.id
         )
-        var updated = session.withMessage(toolMessage)
+        let updated = session.withMessage(toolMessage)
         if let onMessage = callbacks?.onMessage {
             await onMessage(toolMessage)
         }
@@ -557,7 +558,7 @@ final class AgentRuntime: @unchecked Sendable {
             )
         )
 
-        var consumed = Set(toolCalls.map(\.id))
+        let consumed = Set(toolCalls.map(\.id))
         for toolCall in toolCalls {
             let content = toolByCallId[toolCall.id]?.content
                 ?? "Tool did not run or the result was not recorded."

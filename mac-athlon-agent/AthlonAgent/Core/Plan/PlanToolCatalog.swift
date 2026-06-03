@@ -33,7 +33,7 @@ enum PlanToolCatalog {
             }
         }
 
-        var filtered = tools.filter { !isPlanTool($0.name) }
+        let filtered = tools.filter { !isPlanTool($0.name) }
         guard plan?.phase == .approved else {
             return filtered.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
