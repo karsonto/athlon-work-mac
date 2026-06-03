@@ -153,6 +153,25 @@ public sealed class FileStorageService(IAppLogger logger, IAppPathProvider paths
             return null;
         }
 
+        // Try index.json lookup first (much faster than directory scan)
+        var index = await jsonFileStore.LoadAsync<List<SessionIndexEntry>>(
+            Path.Combine(paths.SessionsPath, "index.json"), cancellationToken);
+        if (index is { Count: > 0 })
+        {
+            var match = index.FirstOrDefault(e =>
+                string.Equals(e.Id, sessionId, StringComparison.Ordinal) &&
+                !string.IsNullOrWhiteSpace(e.Path));
+            if (match is not null)
+            {
+                var indexPath = Path.Combine(match.Path, "session.json");
+                if (File.Exists(indexPath))
+                {
+                    return await jsonFileStore.LoadAsync<AgentSession>(indexPath, cancellationToken);
+                }
+            }
+        }
+
+        // Fallback: full directory scan (slow but comprehensive)
         foreach (var file in Directory.EnumerateFiles(paths.SessionsPath, "session.json", SearchOption.AllDirectories))
         {
             var session = await jsonFileStore.LoadAsync<AgentSession>(file, cancellationToken);
