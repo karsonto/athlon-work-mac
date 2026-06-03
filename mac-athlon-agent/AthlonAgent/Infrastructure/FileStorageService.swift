@@ -75,6 +75,8 @@ enum SessionMarkdownWriter {
 final class FileStorageService: CompactionStorageProviding, @unchecked Sendable {
     private let paths: AppPathProvider
     private let indexLock = NSLock()
+    /// In-memory index cache; nil means not yet loaded. Avoids O(n) directory scan on every save.
+    private var cachedIndexEntries: [SessionIndexEntry]?
 
     init(paths: AppPathProvider = .shared) {
         self.paths = paths
@@ -101,13 +103,17 @@ final class FileStorageService: CompactionStorageProviding, @unchecked Sendable 
             let sessionPath = (sessionDir as NSString).appendingPathComponent("session.json")
             try writeJSON(session, to: sessionPath)
 
+            // conversation.jsonl is maintained incrementally by appendConversationMessageSync.
+            // Only re-sync here to handle compaction/removal (messages.size changed from expected).
+            syncConversationJsonl(sessionId: session.id, messages: session.messages)
+
+            // conversation.md is a user-facing export; write it (I/O heavy but called less often).
             let markdownPath = (sessionDir as NSString).appendingPathComponent("conversation.md")
             try writeText(SessionMarkdownWriter.writeConversation(session), to: markdownPath)
-
-            syncConversationJsonl(sessionId: session.id, messages: session.messages)
         }
 
-        try refreshIndex()
+        // Update index incrementally instead of full O(n) directory scan.
+        updateIndexEntry(for: session)
     }
 
     func loadSession(_ sessionId: String) throws -> AgentSession? {
@@ -140,7 +146,7 @@ final class FileStorageService: CompactionStorageProviding, @unchecked Sendable 
         if FileManager.default.fileExists(atPath: sessionDir) {
             try FileManager.default.removeItem(atPath: sessionDir)
         }
-        try refreshIndex()
+        removeIndexEntry(sessionId: sessionId)
     }
 
     func appendConversationMessageSync(sessionId: String, message: ChatMessage) throws {
@@ -277,16 +283,66 @@ final class FileStorageService: CompactionStorageProviding, @unchecked Sendable 
 
     // MARK: - Index
 
+    /// Invalidates the in-memory cache and rebuilds index.json from disk.
     func refreshIndex() throws {
         indexLock.lock()
-        defer { indexLock.unlock() }
+        cachedIndexEntries = nil
+        let entries = try listSessionIndexEntriesUncached()
+        cachedIndexEntries = entries
+        indexLock.unlock()
 
-        let entries = try listSessionIndexEntries()
+        try persistIndexFile(entries)
+    }
+
+    /// Upserts a single entry in the in-memory cache and writes index.json.
+    private func updateIndexEntry(for session: AgentSession) {
+        indexLock.lock()
+        var entries = cachedIndexEntries ?? (try? listSessionIndexEntriesUncached()) ?? []
+        let newEntry = SessionIndexEntry(
+            id: session.id,
+            title: session.title,
+            path: paths.sessionDirectory(session.id),
+            updatedAt: session.updatedAt
+        )
+        if let idx = entries.firstIndex(where: { $0.id == session.id }) {
+            entries[idx] = newEntry
+        } else {
+            entries.append(newEntry)
+        }
+        entries.sort { $0.updatedAt > $1.updatedAt }
+        cachedIndexEntries = entries
+        indexLock.unlock()
+
+        try? persistIndexFile(entries)
+    }
+
+    /// Removes a single entry from the in-memory cache and writes index.json.
+    private func removeIndexEntry(sessionId: String) {
+        indexLock.lock()
+        var entries = cachedIndexEntries ?? (try? listSessionIndexEntriesUncached()) ?? []
+        entries.removeAll { $0.id == sessionId }
+        cachedIndexEntries = entries
+        indexLock.unlock()
+
+        try? persistIndexFile(entries)
+    }
+
+    private func persistIndexFile(_ entries: [SessionIndexEntry]) throws {
         let indexPath = (paths.sessionsPath as NSString).appendingPathComponent("index.json")
         try writeJSON(entries, to: indexPath)
     }
 
     private func listSessionIndexEntries() throws -> [SessionIndexEntry] {
+        indexLock.lock()
+        if let cached = cachedIndexEntries {
+            indexLock.unlock()
+            return cached
+        }
+        indexLock.unlock()
+        return try listSessionIndexEntriesUncached()
+    }
+
+    private func listSessionIndexEntriesUncached() throws -> [SessionIndexEntry] {
         guard FileManager.default.fileExists(atPath: paths.sessionsPath) else {
             return []
         }
@@ -320,7 +376,11 @@ final class FileStorageService: CompactionStorageProviding, @unchecked Sendable 
             }
         }
 
-        return result.values.sorted { $0.updatedAt > $1.updatedAt }
+        let sorted = result.values.sorted { $0.updatedAt > $1.updatedAt }
+        indexLock.lock()
+        cachedIndexEntries = sorted
+        indexLock.unlock()
+        return sorted
     }
 
     // MARK: - Helpers

@@ -229,57 +229,52 @@ final class AgentRuntime: @unchecked Sendable {
             return (session, response)
         } catch let error as OpenAiModelClientError {
             if case .contextLengthExceeded = error {
-                var updated = await runPreCompletionPipeline(
-                    session: session,
-                    callbacks: callbacks,
-                    options: .forceCompact
+                return try await retryWithCompaction(
+                    session: session, callbacks: callbacks,
+                    frozenPrompt: frozenPrompt, tools: tools
                 )
-                let environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
-                    frozen: frozenPrompt,
-                    session: updated,
-                    tools: tools
-                )
-                let retryMessages = Self.buildModelMessages(
-                    environmentPrompt: environmentPrompt,
-                    history: updated.messages,
-                    includeReasoningInModelContext: Self.shouldIncludeReasoningInModelContext(settings: settings)
-                )
-                let response = try await modelClient.completeChat(
-                    AgentModelRequest(messages: retryMessages, tools: tools),
-                    onTextDelta: callbacks?.onAssistantTextDelta,
-                    onReasoningDelta: callbacks?.onAssistantReasoningDelta,
-                    onToolCallDelta: callbacks?.onAssistantToolCallDelta
-                )
-                return (updated, response)
             }
             throw error
         } catch {
             if Self.isContextLengthError(error) {
-                var updated = await runPreCompletionPipeline(
-                    session: session,
-                    callbacks: callbacks,
-                    options: .forceCompact
+                return try await retryWithCompaction(
+                    session: session, callbacks: callbacks,
+                    frozenPrompt: frozenPrompt, tools: tools
                 )
-                let environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
-                    frozen: frozenPrompt,
-                    session: updated,
-                    tools: tools
-                )
-                let retryMessages = Self.buildModelMessages(
-                    environmentPrompt: environmentPrompt,
-                    history: updated.messages,
-                    includeReasoningInModelContext: Self.shouldIncludeReasoningInModelContext(settings: settings)
-                )
-                let response = try await modelClient.completeChat(
-                    AgentModelRequest(messages: retryMessages, tools: tools),
-                    onTextDelta: callbacks?.onAssistantTextDelta,
-                    onReasoningDelta: callbacks?.onAssistantReasoningDelta,
-                    onToolCallDelta: callbacks?.onAssistantToolCallDelta
-                )
-                return (updated, response)
             }
             throw error
         }
+    }
+
+    /// Runs forced compaction and retries the model completion.
+    private func retryWithCompaction(
+        session: AgentSession,
+        callbacks: AgentTurnCallbacks?,
+        frozenPrompt: FrozenSystemPrompt,
+        tools: [ToolDefinition]
+    ) async throws -> (session: AgentSession, response: AgentModelResponse) {
+        var updated = await runPreCompletionPipeline(
+            session: session,
+            callbacks: callbacks,
+            options: .forceCompact
+        )
+        let environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
+            frozen: frozenPrompt,
+            session: updated,
+            tools: tools
+        )
+        let retryMessages = Self.buildModelMessages(
+            environmentPrompt: environmentPrompt,
+            history: updated.messages,
+            includeReasoningInModelContext: Self.shouldIncludeReasoningInModelContext(settings: settings)
+        )
+        let response = try await modelClient.completeChat(
+            AgentModelRequest(messages: retryMessages, tools: tools),
+            onTextDelta: callbacks?.onAssistantTextDelta,
+            onReasoningDelta: callbacks?.onAssistantReasoningDelta,
+            onToolCallDelta: callbacks?.onAssistantToolCallDelta
+        )
+        return (updated, response)
     }
 
     /// Pushes the normalized completion to UI callbacks (DeepSeek often streams reasoning only; answer appears after normalize).

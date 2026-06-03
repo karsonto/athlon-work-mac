@@ -171,7 +171,6 @@ final class AppState: ObservableObject {
 
         // Initialize services
         sessionManager = SessionManager()
-        agentRuntime = AgentRuntimeService(settings: settings)
         mcpClientService = McpClientService()
         mcpClientService.syncFromSettings(settings.mcpServers)
         skillService = SkillService()
@@ -184,7 +183,8 @@ final class AppState: ObservableObject {
             workspaceGuard: planWorkspaceGuard,
             sessionManager: sessionManager
         )
-        agentRuntime.configureDependencies(
+        agentRuntime = AgentRuntimeService(
+            settings: settings,
             workspaceService: workspaceService,
             skillService: skillService,
             sessionManager: sessionManager,
@@ -272,8 +272,8 @@ final class AppState: ObservableObject {
         } catch {
             print("Failed to save settings: \(error)")
         }
-        agentRuntime = AgentRuntimeService(settings: settings)
-        agentRuntime.configureDependencies(
+        agentRuntime = AgentRuntimeService(
+            settings: settings,
             workspaceService: workspaceService,
             skillService: skillService,
             sessionManager: sessionManager,

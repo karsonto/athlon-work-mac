@@ -57,18 +57,15 @@ final class AgentRuntimeService: ObservableObject {
     private var runtime: AgentRuntime?
     private var activeTask: Task<Void, Never>?
 
-    private weak var workspaceService: WorkspaceService?
-    private weak var skillService: SkillService?
-    private weak var sessionManager: SessionManager?
-    private weak var mcpClientService: McpClientService?
-    private weak var executeCommandRegistry: ExecuteCommandProcessRegistry?
-    private weak var planNotebook: PlanNotebook?
+    private let workspaceService: WorkspaceService
+    private let skillService: SkillService
+    private let sessionManager: SessionManager
+    private let mcpClientService: McpClientService
+    private let executeCommandRegistry: ExecuteCommandProcessRegistry
+    private let planNotebook: PlanNotebook
 
-    init(settings: AppSettings) {
-        self.settings = settings
-    }
-
-    func configureDependencies(
+    init(
+        settings: AppSettings,
         workspaceService: WorkspaceService,
         skillService: SkillService,
         sessionManager: SessionManager,
@@ -76,6 +73,7 @@ final class AgentRuntimeService: ObservableObject {
         executeCommandRegistry: ExecuteCommandProcessRegistry,
         planNotebook: PlanNotebook
     ) {
+        self.settings = settings
         self.workspaceService = workspaceService
         self.skillService = skillService
         self.sessionManager = sessionManager
@@ -110,13 +108,6 @@ final class AgentRuntimeService: ObservableObject {
             error = "已有运行中的对话"
             return
         }
-        guard let workspaceService, let skillService, let sessionManager else {
-            error = "Agent 依赖未配置"
-            completion(.failure(NSError(domain: "Athlon", code: -10, userInfo: [
-                NSLocalizedDescriptionKey: "Agent 依赖未配置"
-            ])))
-            return
-        }
 
         isRunning = true
         isStreaming = true
@@ -135,7 +126,7 @@ final class AgentRuntimeService: ObservableObject {
             skillService: skillService,
             sessionContext: sessionContext,
             sessionManager: sessionManager,
-            mcpRegistry: mcpClientService!.registryProvider,
+            mcpRegistry: mcpClientService.registryProvider,
             sessionWorkspacePath: effectiveSessionWorkspace,
             executeCommandRegistry: executeCommandRegistry,
             planNotebook: planNotebook

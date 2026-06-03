@@ -1,0 +1,103 @@
+$path = 'F:\mac-athlon-work\.github\workflows\build-release.yml'
+
+$content = @"
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build macOS App
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '15.4'
+
+      - name: Build Release Binary
+        run: |
+          cd mac-athlon-agent
+          swift build -c release --product AthlonAgent
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Create App Bundle
+        run: |
+          APP_NAME="Athlon Agent"
+          BUNDLE_DIR="`${{ runner.temp }}/`${APP_NAME}.app"
+          CONTENTS_DIR="`${BUNDLE_DIR}/Contents"
+          MACOS_DIR="`${CONTENTS_DIR}/MacOS"
+          RESOURCES_DIR="`${CONTENTS_DIR}/Resources"
+
+          mkdir -p "`${MACOS_DIR}"
+          mkdir -p "`${RESOURCES_DIR}"
+
+          # Copy binary
+          cp mac-athlon-agent/.build/release/AthlonAgent "`${MACOS_DIR}/AthlonAgent"
+          chmod +x "`${MACOS_DIR}/AthlonAgent"
+
+          # Copy Info.plist
+          cp mac-athlon-agent/AthlonAgent/Info.plist "`${CONTENTS_DIR}/Info.plist"
+
+          # Copy Assets
+          cp -R mac-athlon-agent/AthlonAgent/Assets.xcassets "`${RESOURCES_DIR}/Assets.xcassets"
+
+          # Create PkgInfo
+          echo -n 'APPL????' > "`${CONTENTS_DIR}/PkgInfo"
+
+          echo "APP_BUNDLE=`${BUNDLE_DIR}" >> `$GITHUB_ENV
+
+      - name: Ad-hoc Code Sign
+        run: |
+          codesign --force --deep --sign - "`${{ env.APP_BUNDLE }}"
+
+      - name: Create DMG
+        run: |
+          APP_NAME="Athlon Agent"
+          DMG_NAME="AthlonAgent"
+          STAGING="`${{ runner.temp }}/dmg_staging"
+
+          mkdir -p "`${STAGING}"
+          cp -R "`${{ env.APP_BUNDLE }}" "`${STAGING}/"
+
+          # Create symlink to /Applications
+          ln -s /Applications "`${STAGING}/Applications"
+
+          hdiutil create \
+            -volname "`${DMG_NAME}" \
+            -srcfolder "`${STAGING}" \
+            -ov \
+            -format UDZO \
+            "`${{ runner.temp }}/`${DMG_NAME}.dmg"
+
+          echo "DMG_PATH=`${{ runner.temp }}/`${DMG_NAME}.dmg" >> `$GITHUB_ENV
+
+      - name: Upload DMG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AthlonAgent-macOS
+          path: `${{ env.DMG_PATH }}
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: `${{ env.DMG_PATH }}
+          generateReleaseNotes: true
+          token: `${{ secrets.GITHUB_TOKEN }}
+"@
+
+[System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+Write-Host "File written successfully."

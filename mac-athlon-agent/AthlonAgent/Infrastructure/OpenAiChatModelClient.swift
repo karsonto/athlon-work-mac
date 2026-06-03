@@ -123,30 +123,44 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         let endpoint = normalizedEndpoint(settings.endpoint)
         guard let url = URL(string: endpoint) else { throw OpenAiModelClientError.invalidEndpoint }
 
-        var payload: [String: Any] = [
-            "model": settings.modelName,
-            "stream": stream,
-            "messages": request.messages.map(toOpenAiMessage)
-        ]
+        let isDeepSeekThinking = ["deepseek-v4", "deepseek-reasoner", "deepseek-r1"].contains(where: {
+            settings.modelName.lowercased().contains($0)
+        })
 
+        let openAiTools: [OpenAiRequestTool]?
         if request.allowToolCalls, !request.tools.isEmpty {
-            payload["tools"] = request.tools.map(\.dictionary)
-            payload["tool_choice"] = "auto"
+            openAiTools = request.tools.map { tool in
+                OpenAiRequestTool(
+                    function: .init(
+                        name: tool.name,
+                        description: tool.description,
+                        parameters: tool.parameters.map(JsonObject.init)
+                    )
+                )
+            }
+        } else {
+            openAiTools = nil
         }
 
         let maxTokens = resolvedMaxTokens(request: request)
-        if let maxTokens, maxTokens > 0 {
-            payload["max_tokens"] = maxTokens
-        }
 
-        applyDeepSeekThinkingParameters(to: &payload)
+        let openAiRequest = OpenAiChatRequest(
+            model: settings.modelName,
+            messages: request.messages.map(toOpenAiMessage),
+            stream: stream,
+            tools: openAiTools,
+            toolChoice: openAiTools != nil ? "auto" : nil,
+            maxTokens: maxTokens,
+            reasoningEffort: isDeepSeekThinking ? "high" : nil,
+            thinking: isDeepSeekThinking ? OpenAiRequestThinking(type: "enabled", budgetTokens: nil) : nil
+        )
 
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        urlRequest.httpBody = try JSONEncoder().encode(openAiRequest)
 
         if stream {
             let (bytes, response) = try await session.bytes(for: urlRequest)
@@ -183,17 +197,6 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         if let requestMax = request.maxTokens, requestMax > 0 { return requestMax }
         if settings.maxTokens > 0 { return settings.maxTokens }
         return nil
-    }
-
-    /// DeepSeek V4 / reasoner models return `reasoning_content` and `content` separately when thinking is enabled.
-    private func applyDeepSeekThinkingParameters(to payload: inout [String: Any]) {
-        let model = settings.modelName.lowercased()
-        guard model.contains("deepseek") else { return }
-        let thinkingModels = ["deepseek-v4", "deepseek-reasoner", "deepseek-r1"]
-        guard thinkingModels.contains(where: { model.contains($0) }) else { return }
-
-        payload["reasoning_effort"] = "high"
-        payload["thinking"] = ["type": "enabled"]
     }
 
     private func normalizedEndpoint(_ endpoint: String) -> String {
@@ -252,7 +255,12 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         var fallbackBuilder = ""
         var toolStates: [Int: StreamingToolCallState] = [:]
         var sawSseData = false
-        var lastStreamMessage: [String: Any]?
+        var lastStreamMessage: OpenAiResponseMessage?
+
+        // Coalesce small tokens to reduce MainActor hops during streaming.
+        let coalesceThreshold = 20
+        var pendingText = ""
+        var pendingReasoning = ""
 
         for try await line in bytes.lines {
             try Task.checkCancellation()
@@ -267,43 +275,45 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
             if data == "[DONE]" { break }
 
             guard let jsonData = data.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                  let choices = json["choices"] as? [[String: Any]] else {
+                  let chunk = try? JSONDecoder().decode(OpenAiStreamChunk.self, from: jsonData),
+                  let choices = chunk.choices else {
                 continue
             }
 
             for choice in choices {
-                if let message = choice["message"] as? [String: Any] {
+                if let message = choice.message {
                     lastStreamMessage = message
                 }
 
-                guard let payload = streamPayload(from: choice) else { continue }
+                guard let delta = choice.delta else { continue }
 
-                if let token = textToken(from: payload), !token.isEmpty {
+                if let token = delta.resolvedContent, !token.isEmpty {
                     contentBuilder += token
-                    if let onTextDelta { await onTextDelta(token) }
+                    pendingText += token
+                    if pendingText.count >= coalesceThreshold {
+                        if let onTextDelta { await onTextDelta(pendingText) }
+                        pendingText = ""
+                    }
                 }
 
-                if let reasoningToken = reasoningToken(from: payload), !reasoningToken.isEmpty {
+                if let reasoningToken = delta.reasoningContent, !reasoningToken.isEmpty {
                     reasoningBuilder += reasoningToken
-                    if let onReasoningDelta { await onReasoningDelta(reasoningToken) }
+                    pendingReasoning += reasoningToken
+                    if pendingReasoning.count >= coalesceThreshold {
+                        if let onReasoningDelta { await onReasoningDelta(pendingReasoning) }
+                        pendingReasoning = ""
+                    }
                 }
 
-                if let deltaToolCalls = payload["tool_calls"] as? [[String: Any]] {
+                if let deltaToolCalls = delta.toolCalls {
                     for partial in deltaToolCalls {
-                        let index = partial["index"] as? Int ?? toolStates.count
+                        let index = partial.index
                         var state = toolStates[index] ?? StreamingToolCallState()
-                        if let id = partial["id"] as? String { state.id = id }
-                        if let function = partial["function"] as? [String: Any] {
-                            if let name = function["name"] as? String { state.name = name }
-                            if let args = function["arguments"] as? String {
+                        if let id = partial.id { state.id = id }
+                        if let function = partial.function {
+                            if let name = function.name { state.name = name }
+                            if let args = function.arguments {
                                 state.arguments += args
-                            } else if let argsObject = function["arguments"] {
-                                if JSONSerialization.isValidJSONObject(argsObject),
-                                   let data = try? JSONSerialization.data(withJSONObject: argsObject),
-                                   let text = String(data: data, encoding: .utf8) {
-                                    state.arguments = text
-                                }
                             }
                         }
                         toolStates[index] = state
@@ -321,6 +331,10 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
                 }
             }
         }
+
+        // Flush any remaining coalesced text to the UI.
+        if !pendingText.isEmpty, let onTextDelta { await onTextDelta(pendingText) }
+        if !pendingReasoning.isEmpty, let onReasoningDelta { await onReasoningDelta(pendingReasoning) }
 
         if !sawSseData, !fallbackBuilder.isEmpty {
             return try await emitParsedResponse(
@@ -367,7 +381,7 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
     }
 
     private func flushFinalStreamMessage(
-        _ message: [String: Any]?,
+        _ message: OpenAiResponseMessage?,
         contentBuilder: inout String,
         reasoningBuilder: inout String,
         onTextDelta: (@Sendable (String) async -> Void)?,
@@ -376,14 +390,14 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         guard let message else { return }
 
         if contentBuilder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let finalContent = textToken(from: message),
+           let finalContent = message.content,
            !finalContent.isEmpty {
             contentBuilder = finalContent
             if let onTextDelta { await onTextDelta(finalContent) }
         }
 
         if reasoningBuilder.isEmpty,
-           let finalReasoning = reasoningToken(from: message) ?? (message["reasoning_content"] as? String),
+           let finalReasoning = message.reasoningContent,
            !finalReasoning.isEmpty {
             reasoningBuilder = finalReasoning
             if let onReasoningDelta { await onReasoningDelta(finalReasoning) }
@@ -419,16 +433,21 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
     }
 
     private func parseNonStreamingResponse(_ body: String) throws -> AgentModelResponse {
-        guard let data = body.data(using: .utf8),
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any] else {
+        guard let data = body.data(using: .utf8) else {
             throw OpenAiModelClientError.httpError(status: 0, body: Self.truncate(body))
         }
-
-        let content = message["content"] as? String ?? ""
+        let response: OpenAiChatResponse
+        do {
+            response = try JSONDecoder().decode(OpenAiChatResponse.self, from: data)
+        } catch {
+            throw OpenAiModelClientError.httpError(status: 0, body: Self.truncate(body))
+        }
+        guard let message = response.choices.first?.message else {
+            throw OpenAiModelClientError.httpError(status: 0, body: Self.truncate(body))
+        }
+        let content = message.content ?? ""
         let toolCalls = parseToolCallsFromMessage(message)
-        let reasoning = reasoningContent(from: message)
+        let reasoning = message.reasoningContent
         return normalizeAssistantResponse(content: content, toolCalls: toolCalls, reasoningContent: reasoning)
     }
 
@@ -462,13 +481,6 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         )
     }
 
-    private func textToken(from payload: [String: Any]) -> String? {
-        if let value = payload["content"] as? String { return value }
-        if let value = payload["text"] as? String { return value }
-        if let value = payload["output_text"] as? String { return value }
-        return nil
-    }
-
     private func splitEmbeddedThinkingContent(content: String, reasoningContent: String?) -> (String, String?) {
         if let reasoningContent, !reasoningContent.isEmpty {
             return (content, reasoningContent)
@@ -488,17 +500,14 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         return (content, nil)
     }
 
-    private func parseToolCallsFromMessage(_ message: [String: Any]) -> [AgentToolCall] {
-        guard let calls = message["tool_calls"] as? [[String: Any]] else { return [] }
-        return calls.compactMap { call in
-            guard let function = call["function"] as? [String: Any] else { return nil }
-            let id = call["id"] as? String ?? UUID().uuidString.replacingOccurrences(of: "-", with: "")
-            let name = function["name"] as? String ?? ""
-            let argsJson = function["arguments"] as? String ?? "{}"
+    private func parseToolCallsFromMessage(_ message: OpenAiResponseMessage) -> [AgentToolCall] {
+        guard let calls = message.toolCalls else { return [] }
+        return calls.map { call in
+            let argsJson = call.function.arguments
             let args = Self.parseArguments(argsJson)
             return AgentToolCall(
-                id: id,
-                name: name,
+                id: call.id,
+                name: call.function.name,
                 arguments: AssistantToolCallsCodec.serializeArguments(args),
                 argumentsStreaming: "",
                 status: .none
@@ -506,63 +515,43 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         }
     }
 
-    private func streamPayload(from choice: [String: Any]) -> [String: Any]? {
-        if let delta = choice["delta"] as? [String: Any] { return delta }
-        if let message = choice["message"] as? [String: Any] { return message }
-        return nil
-    }
-
-    private func reasoningToken(from payload: [String: Any]) -> String? {
-        if let value = payload["reasoning_content"] as? String { return value }
-        if let value = payload["reasoning"] as? String { return value }
-        return nil
-    }
-
-    private func reasoningContent(from message: [String: Any]) -> String? {
-        if let value = message["reasoning_content"] as? String { return value }
-        if let value = message["reasoning"] as? String { return value }
-        return nil
-    }
-
-    private func toOpenAiMessage(_ message: AgentModelMessage) -> [String: Any] {
-        var result: [String: Any] = [
-            "role": message.role,
-            "content": encodeContent(message.content)
-        ]
-        if let toolCallId = message.toolCallId {
-            result["tool_call_id"] = toolCallId
-        }
-        if let toolCalls = message.toolCalls, !toolCalls.isEmpty {
-            result["tool_calls"] = toolCalls.map { call in
-                [
-                    "id": call.id,
-                    "type": "function",
-                    "function": [
-                        "name": call.name,
-                        "arguments": call.arguments
-                    ]
-                ]
+    private func toOpenAiMessage(_ message: AgentModelMessage) -> OpenAiRequestMessage {
+        var toolCalls: [OpenAiRequestToolCall]?
+        if let calls = message.toolCalls, !calls.isEmpty {
+            toolCalls = calls.map { call in
+                OpenAiRequestToolCall(
+                    id: call.id,
+                    type: "function",
+                    function: .init(name: call.name, arguments: call.arguments)
+                )
             }
         }
-        if message.role.lowercased() == "assistant", let reasoning = message.reasoningContent {
-            result["reasoning_content"] = reasoning
+        var reasoningContent: String?
+        if message.role.lowercased() == "assistant" {
+            reasoningContent = message.reasoningContent
         }
-        return result
+        return OpenAiRequestMessage(
+            role: message.role,
+            content: encodeContent(message.content),
+            toolCallId: message.toolCallId,
+            toolCalls: toolCalls,
+            reasoningContent: reasoningContent
+        )
     }
 
-    private func encodeContent(_ content: AgentModelContent) -> Any {
+    private func encodeContent(_ content: AgentModelContent) -> OpenAiMessageContent {
         switch content {
         case .text(let text):
-            return text
+            return .text(text)
         case .parts(let parts):
-            return parts.map { part -> [String: Any] in
+            return .parts(parts.map { part in
                 switch part {
                 case .text(let text):
-                    return ["type": "text", "text": text]
+                    return OpenAiContentPart(type: "text", text: text, imageUrl: nil)
                 case .imageURL(let url):
-                    return ["type": "image_url", "image_url": ["url": url]]
+                    return OpenAiContentPart(type: "image_url", text: nil, imageUrl: .init(url: url, detail: nil))
                 }
-            }
+            })
         }
     }
 
