@@ -248,11 +248,8 @@ public sealed class FileStorageService(IAppLogger logger, IAppPathProvider paths
         var configDir = paths.ConfigPath;
         await Task.WhenAll(
             jsonFileStore.SaveAsync(Path.Combine(configDir, "settings.json"), settings, cancellationToken),
-            jsonFileStore.SaveAsync(Path.Combine(configDir, "models.json"), settings.Model, cancellationToken),
             McpConfigFileService.SaveServersAsync(paths, settings.McpServers, cancellationToken),
-            SkillConfigFileService.SaveSkillsAsync(paths, settings.Skills, cancellationToken),
-            jsonFileStore.SaveAsync(Path.Combine(configDir, "workspaces.json"), settings.Workspaces, cancellationToken),
-            jsonFileStore.SaveAsync(Path.Combine(configDir, "logging.json"), settings.Logging, cancellationToken)
+            SkillConfigFileService.SaveSkillsAsync(paths, settings.Skills, cancellationToken)
         );
     }
 
