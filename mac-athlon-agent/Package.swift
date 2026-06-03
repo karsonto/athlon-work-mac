@@ -22,7 +22,8 @@ let package = Package(
                 .process("Resources")
             ],
             swiftSettings: [
-                .swiftLanguageMode(.v5)
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-O"], .when(configuration: .release))
             ]
         ),
         .testTarget(
