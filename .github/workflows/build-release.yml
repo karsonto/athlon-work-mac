@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: Build macOS App
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
 
@@ -20,14 +20,13 @@ jobs:
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '15.4'
+          xcode-version: '16.4'
 
       - name: Build Release Binary
         run: |
           cd mac-athlon-agent
+          swift --version
           swift build -c release --product AthlonAgent
-        env:
-          DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
 
       - name: Create App Bundle
         run: |
