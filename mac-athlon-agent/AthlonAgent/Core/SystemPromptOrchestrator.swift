@@ -123,8 +123,10 @@ struct SystemPromptOrchestrator {
             return
         }
 
-        builder += "All file paths are resolved relative to the configured workspace root below, or use absolute paths.\n"
+        builder += "All relative file paths are resolved from the active workspace. Use absolute paths for files outside the workspace.\n"
         builder += "In file tool arguments (path), always use forward slashes (/), e.g. src/foo.swift.\n"
+        builder += "Paths are relative to Workspace root below — not cwd, not a parent directory, and not an absolute path.\n"
+        builder += "Correct: src/foo.swift. Wrong: \(context.workspaceName ?? "workspace")/src/foo.swift or the full Workspace root path in path.\n"
         builder += "Active workspace label: \(context.workspaceName ?? "workspace") (not a path prefix — do not include in file tool path).\n"
         builder += "Workspace root: \(context.workspaceRoot ?? "")\n"
         if let agentsMd = loadAgentsMarkdown(workspaceRoot: context.workspaceRoot) {
