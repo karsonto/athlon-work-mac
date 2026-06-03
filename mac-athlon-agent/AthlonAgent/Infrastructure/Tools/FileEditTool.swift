@@ -3,9 +3,9 @@ import Foundation
 struct FileEditTool: AgentTool {
     let name = "file_edit"
     let description =
-        "Replace exact text in a workspace file (with backup). old_text must match disk content exactly — not file_read's N|line prefixes."
+        "Replace exact text in a file (with backup). old_text must match disk content exactly — not file_read's N|line prefixes."
     let parametersSchema: [String: String] = [
-        "path": ToolPathDescriptions.workspaceRelativePath,
+        "path": "Path relative to workspace root (forward slashes). Example: src/foo.swift. Do NOT prefix with the workspace folder name or use an absolute path.",
         "old_text": "Exact substring from the file (no line-number prefixes)",
         "new_text": "Replacement",
         "replace_all": "Optional true to replace all occurrences"
@@ -21,9 +21,6 @@ struct FileEditTool: AgentTool {
         let oldText = try ToolArguments.required(arguments, name: "old_text", tool: name)
         let newText = try ToolArguments.required(arguments, name: "new_text", tool: name)
         let fullPath = try guard_.normalize(path)
-        guard guard_.isInsideWorkspace(fullPath) else {
-            throw ToolError.outsideWorkspace(fullPath)
-        }
 
         let content = try String(contentsOfFile: fullPath, encoding: .utf8)
         let replaceAll = arguments["replace_all"]?.lowercased() == "true"

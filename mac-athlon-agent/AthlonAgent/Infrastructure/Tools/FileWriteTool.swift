@@ -2,9 +2,9 @@ import Foundation
 
 struct FileWriteTool: AgentTool {
     let name = "file_write"
-    let description = "Create or overwrite a workspace file with backup."
+    let description = "Create or overwrite a file with backup."
     let parametersSchema: [String: String] = [
-        "path": ToolPathDescriptions.workspaceRelativePath,
+        "path": "Path to the file (relative to workspace or absolute)",
         "content": "New content"
     ]
     private let guard_: WorkspaceGuard
@@ -17,9 +17,6 @@ struct FileWriteTool: AgentTool {
         let path = try ToolArguments.normalizedPath(arguments, tool: name)
         let content = try ToolArguments.required(arguments, name: "content", tool: name)
         let fullPath = try guard_.normalize(path)
-        guard guard_.isInsideWorkspace(fullPath) else {
-            throw ToolError.outsideWorkspace(fullPath)
-        }
         try AtomicFile.writeText(content, to: fullPath)
         let fileName = (fullPath as NSString).lastPathComponent
         return ToolResultFormatter.success("Wrote \(content.count) chars to \(fileName)")

@@ -1,14 +1,5 @@
 import Foundation
 
-enum ToolPathDescriptions {
-    static let workspaceRelativePath =
-        "Path relative to workspace root (forward slashes). Example: src/foo.swift. "
-        + "Do NOT prefix with the workspace folder name or use an absolute path."
-    static let optionalWorkspaceRelativeDirectory =
-        "Optional directory relative to workspace root (forward slashes). "
-        + "Do NOT prefix with the workspace folder name."
-}
-
 enum ToolPathNormalizeError: Error, LocalizedError {
     case message(String)
 

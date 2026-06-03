@@ -118,17 +118,13 @@ struct SystemPromptOrchestrator {
 
     private func appendWorkspacePolicy(_ builder: inout String, context: EnvironmentPromptContext) {
         guard context.hasWorkspace else {
-            builder += "当前工作区尚未设定。\n"
-            builder += "请让用户通过侧栏「配置」或设置页的 Workspace 指定工作区目录后，再使用 file_list、file_read、file_write、file_edit、grep_files、glob_files 等文件工具。\n"
-            builder += "在工作区未设定前，不要假设任何文件路径，也不要调用访问工作区文件的工具。\n"
+            builder += "当前工作区尚未设定。文件工具可使用绝对路径或相对于当前进程工作目录的路径。\n"
             builder += "\n"
             return
         }
 
-        builder += "All relative file paths are resolved from the active workspace. Never access files outside the configured workspace.\n"
+        builder += "All file paths are resolved relative to the configured workspace root below, or use absolute paths.\n"
         builder += "In file tool arguments (path), always use forward slashes (/), e.g. src/foo.swift.\n"
-        builder += "Paths are relative to Workspace root below — not cwd, not a parent directory, and not an absolute path.\n"
-        builder += "Correct: src/foo.swift. Wrong: \(context.workspaceName ?? "workspace")/src/foo.swift or the full Workspace root path in path.\n"
         builder += "Active workspace label: \(context.workspaceName ?? "workspace") (not a path prefix — do not include in file tool path).\n"
         builder += "Workspace root: \(context.workspaceRoot ?? "")\n"
         if let agentsMd = loadAgentsMarkdown(workspaceRoot: context.workspaceRoot) {

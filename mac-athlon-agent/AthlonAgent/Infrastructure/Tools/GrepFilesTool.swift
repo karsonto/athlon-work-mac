@@ -2,10 +2,10 @@ import Foundation
 
 struct GrepFilesTool: AgentTool {
     let name = "grep_files"
-    let description = "Search workspace file contents for a literal text pattern."
+    let description = "Search file contents for a literal text pattern."
     let parametersSchema: [String: String] = [
         "pattern": "Literal text pattern to search for",
-        "path": ToolPathDescriptions.optionalWorkspaceRelativeDirectory,
+        "path": "Optional directory path (relative to workspace or absolute)",
         "glob": "Optional file glob filter, e.g. *.swift"
     ]
 
@@ -22,9 +22,6 @@ struct GrepFilesTool: AgentTool {
         let pattern = try ToolArguments.required(arguments, name: "pattern", tool: name)
         let requestedPath = try ToolArguments.optionalNormalizedPath(arguments, tool: name)
         let fullPath = try guard_.normalize(requestedPath)
-        guard guard_.isInsideWorkspace(fullPath) else {
-            throw ToolError.outsideWorkspace(fullPath)
-        }
 
         let glob = arguments["glob"] ?? "*"
         let ignorePatterns = guard_.getIgnorePatterns()

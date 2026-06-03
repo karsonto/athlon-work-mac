@@ -2,8 +2,8 @@ import Foundation
 
 struct FileListTool: AgentTool {
     let name = "file_list"
-    let description = "List files in the active workspace or a workspace subdirectory."
-    let parametersSchema = ["path": ToolPathDescriptions.optionalWorkspaceRelativeDirectory]
+    let description = "List files in a directory."
+    let parametersSchema = ["path": "Optional directory path (relative to workspace or absolute)"]
 
     private let guard_: WorkspaceGuard
 
@@ -14,9 +14,6 @@ struct FileListTool: AgentTool {
     func invoke(arguments: [String: String]) async throws -> String {
         let requestedPath = try ToolArguments.optionalNormalizedPath(arguments, tool: name)
         let fullPath = try guard_.normalize(requestedPath)
-        guard guard_.isInsideWorkspace(fullPath) else {
-            throw ToolError.outsideWorkspace(fullPath)
-        }
 
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDirectory), isDirectory.boolValue else {

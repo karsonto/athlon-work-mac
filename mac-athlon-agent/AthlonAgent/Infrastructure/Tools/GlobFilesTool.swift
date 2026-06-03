@@ -2,10 +2,10 @@ import Foundation
 
 struct GlobFilesTool: AgentTool {
     let name = "glob_files"
-    let description = "Find workspace files matching a glob pattern."
+    let description = "Find files matching a glob pattern."
     let parametersSchema: [String: String] = [
         "pattern": "Glob pattern (supports ** and {a,b} extensions), e.g. **/*.swift or **/*.{png,jpg}",
-        "path": ToolPathDescriptions.optionalWorkspaceRelativeDirectory
+        "path": "Optional directory path (relative to workspace or absolute)"
     ]
 
     private let guard_: WorkspaceGuard
@@ -18,9 +18,6 @@ struct GlobFilesTool: AgentTool {
         let pattern = try ToolArguments.required(arguments, name: "pattern", tool: name)
         let requestedPath = try ToolArguments.optionalNormalizedPath(arguments, tool: name)
         let fullPath = try guard_.normalize(requestedPath)
-        guard guard_.isInsideWorkspace(fullPath) else {
-            throw ToolError.outsideWorkspace(fullPath)
-        }
 
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDirectory), isDirectory.boolValue else {

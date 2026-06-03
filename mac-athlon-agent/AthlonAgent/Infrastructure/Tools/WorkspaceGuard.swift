@@ -39,22 +39,13 @@ final class WorkspaceGuard {
     }
 
     func normalize(_ path: String, cwd: String? = nil) throws -> String {
-        guard let basePath = tryGetWorkspaceRoot() else {
-            throw ToolError.failed(
-                "Workspace not configured",
-                detail: "工作区尚未设定。请先在侧栏「配置」或设置页指定工作区目录。"
-            )
+        let normalized = ToolPathNormalizer.forModel(path)
+        if normalized.hasPrefix("/") {
+            return URL(fileURLWithPath: normalized).standardizedFileURL.path
         }
 
-        var normalized = ToolPathNormalizer.forModel(path)
-        normalized = ToolPathNormalizer.resolveRelativeToWorkspaceRoot(normalized, workspaceRoot: basePath)
-        let rooted: String
-        if normalized.hasPrefix("/") {
-            rooted = normalized
-        } else {
-            let base = (cwd ?? basePath) as NSString
-            rooted = base.appendingPathComponent(normalized)
-        }
+        let base = cwd ?? tryGetWorkspaceRoot() ?? FileManager.default.currentDirectoryPath
+        let rooted = (base as NSString).appendingPathComponent(normalized)
         return URL(fileURLWithPath: rooted).standardizedFileURL.path
     }
 

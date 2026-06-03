@@ -3,10 +3,10 @@ import Foundation
 struct FileReadTool: AgentTool {
     let name = "file_read"
     let description =
-        "Read workspace file content with line numbers (N|line) for display. Large files require offset/limit; "
+        "Read file content with line numbers (N|line) for display. Large files require offset/limit; "
         + "use grep_files to locate content first. Do not use N| prefixes in file_edit old_text."
     let parametersSchema: [String: String] = [
-        "path": ToolPathDescriptions.workspaceRelativePath,
+        "path": "Path to the file (relative to workspace or absolute)",
         "offset": "Optional 0-indexed start line. Default: 0",
         "limit": "Optional max lines (default 500, max 2000)",
         "start_line": "Optional 1-indexed start line",
@@ -24,9 +24,6 @@ struct FileReadTool: AgentTool {
     func invoke(arguments: [String: String]) async throws -> String {
         let path = try ToolArguments.normalizedPath(arguments, tool: name)
         let fullPath = try guard_.normalize(path)
-        guard guard_.isInsideWorkspace(fullPath) else {
-            throw ToolError.outsideWorkspace(fullPath)
-        }
         guard FileManager.default.fileExists(atPath: fullPath) else {
             throw ToolError.notFound("File not found: \(fullPath)")
         }
