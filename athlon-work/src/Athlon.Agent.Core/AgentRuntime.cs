@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json.Serialization;
@@ -16,7 +15,9 @@ public sealed class AgentRuntime(
     IToolResultEvictor toolResultEvictor,
     IActiveAgentSessionContext activeSessionContext,
     AppSettings settings,
-    IAppLogger logger) : IAgentRuntime
+    IAppLogger logger,
+    IToolInvoker toolInvoker,
+    ISessionPersistenceManager sessionPersistence) : IAgentRuntime
 {
     private readonly IAppLogger _logger = logger.ForContext("AgentRuntime");
 
@@ -144,7 +145,7 @@ public sealed class AgentRuntime(
         }
         catch (OperationCanceledException)
         {
-            await storage.SaveSessionAsync(session, CancellationToken.None);
+            await sessionPersistence.SaveSessionAsync(session, CancellationToken.None);
             throw;
         }
     }
@@ -200,53 +201,8 @@ public sealed class AgentRuntime(
         AgentTurnCallbacks? callbacks,
         CancellationToken cancellationToken)
     {
-        var sw = Stopwatch.StartNew();
-        ToolResult result;
-        try
-        {
-            result = await Task.Run(
-                    () => toolRouter.InvokeAsync(new ToolInvocation(toolCall.Name, toolCall.Arguments), cancellationToken),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.Error(ex, "Tool {ToolName} threw; returning failure to the model", toolCall.Name);
-            result = ToolResult.Failure("Tool invocation failed", ex.Message, sw.Elapsed);
-        }
-
-        sw.Stop();
-
-        await storage.AppendToolCallLogAsync(
-            session.Id,
-            new SessionToolCallLogEntry(
-                DateTimeOffset.UtcNow,
-                toolCall.Id,
-                toolCall.Name,
-                toolCall.Arguments,
-                result.Succeeded,
-                result.Summary,
-                result.Content,
-                result.Error,
-                sw.ElapsedMilliseconds),
-            cancellationToken);
-
-        var content = FormatToolResult(toolCall, result);
-        content = await toolResultEvictor.EvictIfNeededAsync(
-            session.Id,
-            toolCall,
-            result,
-            content,
-            cancellationToken);
-
-        var toolMessage = ChatMessage.Create(MessageRole.Tool, content, parentMessageId);
-        session = session.WithMessage(toolMessage);
-        await NotifyMessageAsync(callbacks, toolMessage);
-        await PersistMessageAsync(session, toolMessage, cancellationToken, saveFull: false);
+        session = await toolInvoker.InvokeToolAndPersistAsync(session, parentMessageId, toolCall, callbacks, cancellationToken);
+        await PersistMessageAsync(session, session.Messages.Last(), cancellationToken, saveFull: false);
         return session;
     }
 
@@ -295,11 +251,7 @@ public sealed class AgentRuntime(
 
     private async Task PersistMessageAsync(AgentSession session, ChatMessage message, CancellationToken cancellationToken, bool saveFull = true)
     {
-        await storage.AppendConversationMessageAsync(session.Id, message, cancellationToken);
-        if (saveFull)
-        {
-            await storage.SaveSessionAsync(session, cancellationToken);
-        }
+        await sessionPersistence.PersistMessageAsync(session, message, cancellationToken, saveFull);
     }
 
     private static bool HasCompactionStructureChange(AgentSession session, HashSet<string> messageIdsBefore)
@@ -447,7 +399,7 @@ public sealed class AgentRuntime(
         var toolByCallId = new Dictionary<string, ChatMessage>(StringComparer.Ordinal);
         foreach (var toolMessage in toolMessages)
         {
-            var toolCallId = ExtractToolCallId(toolMessage.Content);
+            var toolCallId = ToolInvoker.ExtractToolCallId(toolMessage.Content);
             if (!string.IsNullOrWhiteSpace(toolCallId))
             {
                 toolByCallId.TryAdd(toolCallId, toolMessage);
@@ -466,7 +418,7 @@ public sealed class AgentRuntime(
         var consumed = new HashSet<string>(toolCalls.Select(call => call.Id), StringComparer.Ordinal);
         foreach (var toolMessage in toolMessages)
         {
-            var toolCallId = ExtractToolCallId(toolMessage.Content);
+            var toolCallId = ToolInvoker.ExtractToolCallId(toolMessage.Content);
             if (toolCallId is not null && consumed.Contains(toolCallId))
             {
                 continue;
@@ -510,48 +462,6 @@ public sealed class AgentRuntime(
         }
 
         return parts;
-    }
-
-    public static string FormatToolResult(AgentToolCall call, ToolResult result)
-    {
-        var status = result.Succeeded ? "succeeded" : "failed";
-        return string.Join(Environment.NewLine, new[]
-        {
-            $"ToolCallId: {call.Id}",
-            $"Tool `{call.Name}` {status}.",
-            "",
-            $"Arguments: {FormatArguments(call.Arguments)}",
-            $"Summary: {result.Summary}",
-            "",
-            result.Content ?? result.Error ?? string.Empty
-        });
-    }
-
-    private static string FormatArguments(IReadOnlyDictionary<string, string> arguments)
-    {
-        return arguments.Count == 0
-            ? "(none)"
-            : string.Join(Environment.NewLine, arguments.Select(argument => $"{argument.Key}={argument.Value}"));
-    }
-
-    private static string? ExtractToolCallId(string? content)
-    {
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            return null;
-        }
-
-        foreach (var line in content.Split(["\r\n", "\n"], StringSplitOptions.None))
-        {
-            const string prefix = "ToolCallId:";
-            if (line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                var value = line[prefix.Length..].Trim();
-                return string.IsNullOrWhiteSpace(value) ? null : value;
-            }
-        }
-
-        return null;
     }
 
     private static bool ShouldListWorkspaceFiles(string userInput)
