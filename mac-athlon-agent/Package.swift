@@ -20,9 +20,6 @@ let package = Package(
             resources: [
                 .process("Assets.xcassets"),
                 .process("Resources")
-            ],
-            swiftSettings: [
-                .swiftLanguageMode(.v5)
             ]
         ),
         .testTarget(
