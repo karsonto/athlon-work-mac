@@ -23,6 +23,7 @@ Icon
 DerivedData/
 .swiftpm/
 .build/
+mac-athlon-agent/dist/
 *.xcbkptlist
 *.resolved
 

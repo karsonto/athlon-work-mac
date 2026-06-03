@@ -30,33 +30,20 @@ jobs:
 
       - name: Create App Bundle
         run: |
-          APP_NAME="Athlon Agent"
-          BUNDLE_DIR="${{ runner.temp }}/${APP_NAME}.app"
-          CONTENTS_DIR="${BUNDLE_DIR}/Contents"
-          MACOS_DIR="${CONTENTS_DIR}/MacOS"
-          RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-
-          mkdir -p "${MACOS_DIR}"
-          mkdir -p "${RESOURCES_DIR}"
-
-          # Copy binary
-          cp mac-athlon-agent/.build/release/AthlonAgent "${MACOS_DIR}/AthlonAgent"
-          chmod +x "${MACOS_DIR}/AthlonAgent"
-
-          # Copy Info.plist
-          cp mac-athlon-agent/AthlonAgent/Info.plist "${CONTENTS_DIR}/Info.plist"
-
-          # Copy Assets
-          cp -R mac-athlon-agent/AthlonAgent/Assets.xcassets "${RESOURCES_DIR}/Assets.xcassets"
-
-          # Create PkgInfo
-          echo -n 'APPL????' > "${CONTENTS_DIR}/PkgInfo"
-
+          chmod +x mac-athlon-agent/Scripts/package-macos-app.sh
+          BUNDLE_DIR="${{ runner.temp }}/Athlon Agent.app"
+          BUILD_DIR="$(pwd)/mac-athlon-agent/.build/release" \
+            BUNDLE_DIR="${BUNDLE_DIR}" \
+            mac-athlon-agent/Scripts/package-macos-app.sh
           echo "APP_BUNDLE=${BUNDLE_DIR}" >> $GITHUB_ENV
 
-      - name: Ad-hoc Code Sign
+      - name: Verify App Bundle
         run: |
-          codesign --force --deep --sign - "${{ env.APP_BUNDLE }}"
+          APP="${{ env.APP_BUNDLE }}"
+          test -x "${APP}/Contents/MacOS/AthlonAgent"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${APP}/Contents/Info.plist")" = "AthlonAgent"
+          test -d "${APP}/Contents/Resources/AthlonAgent_AthlonAgent.bundle"
+          codesign --verify --deep --strict "${APP}"
 
       - name: Create DMG
         run: |
