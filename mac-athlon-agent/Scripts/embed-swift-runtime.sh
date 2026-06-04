@@ -28,65 +28,36 @@ resolve_toolchain() {
   return 1
 }
 
-resolve_swift_runtime_dir() {
-  local toolchain="$1"
-  local dir
+find_swift_library_source() {
+  local base="$1"
+  local toolchain="$2"
+  local dir source
 
   shopt -s nullglob
   for dir in \
+    "${toolchain}/usr/lib/swift-5.5/macosx" \
     "${toolchain}/usr/lib/swift-5.0/macosx" \
     "${toolchain}/usr/lib/swift/macosx" \
     "${toolchain}"/usr/lib/swift-*/macosx; do
-    if [[ -f "${dir}/libswiftCore.dylib" ]]; then
+    source="${dir}/${base}"
+    if [[ -f "${source}" ]]; then
       shopt -u nullglob
-      printf '%s' "${dir}"
+      printf '%s' "${source}"
       return 0
     fi
   done
   shopt -u nullglob
-  return 1
-}
-
-resolve_swift_compat_dir() {
-  local toolchain="$1"
-  local dir
-
-  shopt -s nullglob
-  for dir in "${toolchain}"/usr/lib/swift-*/macosx; do
-    if [[ -f "${dir}/libswiftCompatibilitySpan.dylib" ]]; then
-      shopt -u nullglob
-      printf '%s' "${dir}"
-      return 0
-    fi
-  done
-  shopt -u nullglob
-  return 1
-}
-
-find_swift_library() {
-  local base="$1"
-  local runtime_dir="$2"
-  local compat_dir="$3"
-
-  if [[ -n "${runtime_dir}" && -f "${runtime_dir}/${base}" ]]; then
-    printf '%s' "${runtime_dir}/${base}"
-    return 0
-  fi
-  if [[ -n "${compat_dir}" && -f "${compat_dir}/${base}" ]]; then
-    printf '%s' "${compat_dir}/${base}"
-    return 0
-  fi
   return 1
 }
 
 collect_swift_lib_names() {
-  local executable="$1"
+  local binary="$1"
   local tmp
   tmp="$(mktemp)"
 
-  otool -L "${executable}" 2>/dev/null > "${tmp}" || true
-  for arch in x86_64 arm64; do
-    otool -arch "${arch}" -L "${executable}" 2>/dev/null >> "${tmp}" || true
+  otool -L "${binary}" 2>/dev/null > "${tmp}" || true
+  for arch in x86_64 arm64 arm64e; do
+    otool -arch "${arch}" -L "${binary}" 2>/dev/null >> "${tmp}" || true
   done
 
   grep -E '/usr/lib/swift/|@rpath/libswift' "${tmp}" \
@@ -100,119 +71,108 @@ collect_swift_lib_names() {
   rm -f "${tmp}"
 }
 
-copy_swift_library() {
+rehome_swift_reference() {
+  local binary="$1"
+  local from="$2"
+  local to="$3"
+
+  install_name_tool -change "${from}" "${to}" "${binary}" 2>/dev/null || true
+  for arch in x86_64 arm64; do
+    install_name_tool -arch "${arch}" -change "${from}" "${to}" "${binary}" 2>/dev/null || true
+  done
+}
+
+copy_library_if_missing() {
   local source="$1"
   local frameworks="$2"
-  local base="$3"
-  local executable="$4"
-
-  if [[ ! -f "${source}" ]]; then
-    return 1
-  fi
+  local base
+  base="$(basename "${source}")"
 
   if [[ ! -f "${frameworks}/${base}" ]]; then
     cp "${source}" "${frameworks}/${base}"
     install_name_tool -id "@rpath/${base}" "${frameworks}/${base}" 2>/dev/null || true
   fi
-
-  install_name_tool -change "/usr/lib/swift/${base}" "@rpath/${base}" "${executable}" 2>/dev/null || true
-  install_name_tool -change "@rpath/${base}" "@rpath/${base}" "${executable}" 2>/dev/null || true
-  return 0
 }
 
 embed_swift_runtime() {
   local app_bundle="$1"
   local executable="${app_bundle}/Contents/MacOS/AthlonAgent"
   local frameworks="${app_bundle}/Contents/Frameworks"
+  local toolchain base source dir
 
   if [[ ! -f "${executable}" ]]; then
     echo "error: missing executable ${executable}" >&2
     return 1
   fi
 
-  local toolchain runtime_dir compat_dir
   toolchain="$(resolve_toolchain)"
-  runtime_dir="$(resolve_swift_runtime_dir "${toolchain}" || true)"
-  compat_dir="$(resolve_swift_compat_dir "${toolchain}" || true)"
-
   mkdir -p "${frameworks}"
+
   install_name_tool -add_rpath "@executable_path/../Frameworks" "${executable}" 2>/dev/null || true
 
-  if xcrun --find swift-stdlib-tool >/dev/null 2>&1; then
-    xcrun swift-stdlib-tool \
-      --copy \
-      --sign - \
-      --scan-executable "${executable}" \
-      --scan-folder "${frameworks}" \
-      --scan-folder "${app_bundle}/Contents/PlugIns" \
-      --scan-folder "${app_bundle}/Contents/Library/SystemExtensions" \
-      --scan-folder "${app_bundle}/Contents/Extensions" \
-      --platform macosx \
-      --destination "${frameworks}" >/dev/null 2>&1 || true
-  fi
-
-  local base source copied_any=0
   while IFS= read -r base; do
     [[ -n "${base}" ]] || continue
-    source="$(find_swift_library "${base}" "${runtime_dir}" "${compat_dir}" || true)"
+    source="$(find_swift_library_source "${base}" "${toolchain}" || true)"
     [[ -n "${source}" ]] || continue
-    if copy_swift_library "${source}" "${frameworks}" "${base}" "${executable}"; then
-      copied_any=1
-    fi
+    copy_library_if_missing "${source}" "${frameworks}"
   done < <(collect_swift_lib_names "${executable}")
 
-  if [[ "${copied_any}" -eq 0 ]]; then
-    shopt -s nullglob
-    for dir in \
-      "${runtime_dir}" \
-      "${toolchain}/usr/lib/swift-5.0/macosx" \
-      "${toolchain}"/usr/lib/swift-*/macosx; do
-      [[ -n "${dir}" && -d "${dir}" ]] || continue
-      for source in "${dir}"/libswift*.dylib; do
-        base="$(basename "${source}")"
-        if copy_swift_library "${source}" "${frameworks}" "${base}" "${executable}"; then
-          copied_any=1
-        fi
-      done
+  shopt -s nullglob
+  for dir in \
+    "${toolchain}/usr/lib/swift-5.0/macosx" \
+    "${toolchain}/usr/lib/swift-5.5/macosx" \
+    "${toolchain}"/usr/lib/swift-*/macosx; do
+    [[ -d "${dir}" ]] || continue
+    for source in "${dir}"/libswift*.dylib; do
+      copy_library_if_missing "${source}" "${frameworks}"
     done
-    shopt -u nullglob
-  fi
+  done
+  shopt -u nullglob
 
-  if [[ -n "${compat_dir}" \
-        && -f "${compat_dir}/libswiftCompatibilitySpan.dylib" \
-        && ! -f "${frameworks}/libswiftCompatibilitySpan.dylib" ]]; then
-    cp "${compat_dir}/libswiftCompatibilitySpan.dylib" "${frameworks}/"
-    install_name_tool -id "@rpath/libswiftCompatibilitySpan.dylib" \
-      "${frameworks}/libswiftCompatibilitySpan.dylib" 2>/dev/null || true
-  fi
+  for required in libswiftCore.dylib libswift_Concurrency.dylib; do
+    if [[ ! -f "${frameworks}/${required}" ]]; then
+      source="$(find_swift_library_source "${required}" "${toolchain}" || true)"
+      if [[ -n "${source}" ]]; then
+        copy_library_if_missing "${source}" "${frameworks}"
+      fi
+    fi
+  done
 
   shopt -s nullglob
-  local dylib lib
+  for dylib in "${frameworks}"/*.dylib; do
+    base="$(basename "${dylib}")"
+    rehome_swift_reference "${executable}" "/usr/lib/swift/${base}" "@rpath/${base}"
+  done
+
   for dylib in "${frameworks}"/*.dylib; do
     install_name_tool -id "@rpath/$(basename "${dylib}")" "${dylib}" 2>/dev/null || true
     while IFS= read -r lib; do
       [[ -n "${lib}" ]] || continue
       base="$(basename "${lib}")"
       if [[ -f "${frameworks}/${base}" ]]; then
-        install_name_tool -change "${lib}" "@rpath/${base}" "${dylib}" 2>/dev/null || true
+        rehome_swift_reference "${dylib}" "${lib}" "@rpath/${base}"
       fi
     done < <(otool -L "${dylib}" 2>/dev/null | grep -E '/usr/lib/swift/|@rpath/libswift' \
       | sed -E 's/^[[:space:]]+([^[:space:]]+).*/\1/')
   done
   shopt -u nullglob
 
-  local count
-  count="$(find "${frameworks}" -name '*.dylib' | wc -l | tr -d ' ')"
-  if [[ "${count}" -eq 0 ]]; then
-    echo "error: no Swift runtime libraries embedded into ${frameworks}" >&2
-    echo "error: toolchain=${toolchain}" >&2
-    echo "error: runtime_dir=${runtime_dir:-<missing>}" >&2
-    echo "error: compat_dir=${compat_dir:-<missing>}" >&2
-    echo "error: linked swift libs:" >&2
-    otool -L "${executable}" 2>/dev/null | grep -i swift >&2 || true
+  rm -f "${frameworks}"/*.original
+
+  for required in libswiftCore.dylib libswift_Concurrency.dylib; do
+    if [[ ! -f "${frameworks}/${required}" ]]; then
+      echo "error: missing required embedded Swift runtime ${required}" >&2
+      return 1
+    fi
+  done
+
+  if otool -arch x86_64 -L "${executable}" 2>/dev/null | grep -q '/usr/lib/swift/libswift_Concurrency.dylib'; then
+    echo "error: executable x86_64 slice still links /usr/lib/swift/libswift_Concurrency.dylib" >&2
     return 1
   fi
 
+  local count
+  count="$(find "${frameworks}" -name '*.dylib' | wc -l | tr -d ' ')"
   echo "Embedded ${count} Swift runtime libraries into ${frameworks}"
 }
 

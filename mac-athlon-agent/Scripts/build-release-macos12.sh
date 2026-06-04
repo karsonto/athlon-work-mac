@@ -13,16 +13,27 @@ fi
 # Avoid stale Xcode-integrated build state from multi-arch swift build.
 rm -rf "${ROOT}/.build/apple"
 
+TOOLCHAIN="$(xcrun --show-toolchain-path)"
+COMPAT_LIB="${TOOLCHAIN}/usr/lib/swift/macosx"
+SWIFT_LINK_FLAGS=(
+  -Xlinker -L -Xlinker "${COMPAT_LIB}"
+  -Xlinker -lswiftCompatibility56
+  -Xlinker -lswiftCompatibilityConcurrency
+  -Xlinker -lswiftCompatibilityPacks
+  -Xlinker -lswiftCompatibilityDynamicReplacements
+  -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+)
+
 ARM_BIN="${ROOT}/.build/arm64-apple-macosx/release/AthlonAgent"
 X86_BIN="${ROOT}/.build/x86_64-apple-macosx/release/AthlonAgent"
 UNIVERSAL_DIR="${ROOT}/.build/universal/release"
 RESOURCE_BUNDLE="${ROOT}/.build/arm64-apple-macosx/release/AthlonAgent_AthlonAgent.bundle"
 
 echo "Building arm64 release for macOS 12..."
-swift build -c release --product AthlonAgent --triple arm64-apple-macosx12.0
+swift build -c release --product AthlonAgent --triple arm64-apple-macosx12.0 "${SWIFT_LINK_FLAGS[@]}"
 
 echo "Building x86_64 release for macOS 12..."
-swift build -c release --product AthlonAgent --triple x86_64-apple-macosx12.0
+swift build -c release --product AthlonAgent --triple x86_64-apple-macosx12.0 "${SWIFT_LINK_FLAGS[@]}"
 
 if [[ ! -f "${ARM_BIN}" || ! -f "${X86_BIN}" ]]; then
   echo "error: missing per-architecture release binaries" >&2

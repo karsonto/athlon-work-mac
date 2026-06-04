@@ -68,6 +68,8 @@ jobs:
           test -d "${APP}/Contents/Resources/AthlonAgent_AthlonAgent.bundle"
           lipo -info "${EXEC}" | grep -E 'x86_64|arm64'
           test -f "${APP}/Contents/Frameworks/libswiftCore.dylib"
+          test -f "${APP}/Contents/Frameworks/libswift_Concurrency.dylib"
+          ! otool -arch x86_64 -L "${EXEC}" | grep -q '/usr/lib/swift/libswift_Concurrency.dylib'
           test "$(find "${APP}/Contents/Frameworks" -name '*.dylib' | wc -l | tr -d ' ')" -ge 10
           codesign --verify --deep --strict "${APP}"
 
