@@ -3,15 +3,29 @@
 set -euo pipefail
 
 resolve_toolchain() {
-  local toolchain=""
-  toolchain="$(xcrun --toolchain default --show-toolchain-path 2>/dev/null || true)"
-  if [[ -z "${toolchain}" ]]; then
-    toolchain="$(xcrun --toolchain swift --show-toolchain-path 2>/dev/null || true)"
+  local toolchain="" swift_bin=""
+
+  for candidate in \
+    "$(xcrun --show-toolchain-path 2>/dev/null || true)" \
+    "$(xcrun --toolchain default --show-toolchain-path 2>/dev/null || true)" \
+    "$(xcrun --toolchain swift --show-toolchain-path 2>/dev/null || true)"; do
+    if [[ -n "${candidate}" && -d "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+
+  swift_bin="$(xcrun --find swift 2>/dev/null || true)"
+  if [[ -n "${swift_bin}" ]]; then
+    toolchain="${swift_bin%/usr/bin/swift}"
+    if [[ -d "${toolchain}" ]]; then
+      printf '%s' "${toolchain}"
+      return 0
+    fi
   fi
-  if [[ -z "${toolchain}" ]]; then
-    toolchain="$(dirname "$(dirname "$(xcrun --find swift)")")"
-  fi
-  printf '%s' "${toolchain}"
+
+  echo "error: unable to locate Xcode Swift toolchain" >&2
+  return 1
 }
 
 resolve_swift_runtime_dir() {
