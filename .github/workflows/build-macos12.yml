@@ -31,33 +31,29 @@ jobs:
         with:
           xcode-version: '16.4'
 
-      - name: Resolve SwiftPM dependencies
+      - name: Resolve and patch dependencies
         run: |
           cd mac-athlon-agent
+          chmod +x Scripts/patch-dependencies-macos12.sh Scripts/build-release-macos12.sh Scripts/package-macos-app.sh Scripts/embed-swift-runtime.sh
           swift --version
           swift package resolve
-
-      - name: Patch dependencies for macOS 12
-        run: |
-          chmod +x mac-athlon-agent/Scripts/patch-dependencies-macos12.sh
-          mac-athlon-agent/Scripts/patch-dependencies-macos12.sh
-          test -d mac-athlon-agent/.build/checkouts/swift-sdk/Sources/MCP
-
-      - name: Build Release Binary (Universal)
-        run: |
-          chmod +x mac-athlon-agent/Scripts/build-release-macos12.sh
-          mac-athlon-agent/Scripts/build-release-macos12.sh
+          ./Scripts/patch-dependencies-macos12.sh
+          test -d .build/checkouts/swift-sdk/Sources/MCP
 
       - name: Run Tests
         run: |
           cd mac-athlon-agent
-          swift test --arch arm64
+          swift test
+
+      - name: Build Release Binary (Universal)
+        run: |
+          cd mac-athlon-agent
+          SKIP_RESOLVE=1 ./Scripts/build-release-macos12.sh
 
       - name: Create App Bundle
         run: |
-          chmod +x mac-athlon-agent/Scripts/package-macos-app.sh
           BUNDLE_DIR="${{ runner.temp }}/Athlon Agent.app"
-          BUILD_DIR="$(pwd)/mac-athlon-agent/.build/apple/Products/Release" \
+          BUILD_DIR="$(pwd)/mac-athlon-agent/.build/universal/release" \
             BUNDLE_DIR="${BUNDLE_DIR}" \
             mac-athlon-agent/Scripts/package-macos-app.sh
           echo "APP_BUNDLE=${BUNDLE_DIR}" >> $GITHUB_ENV

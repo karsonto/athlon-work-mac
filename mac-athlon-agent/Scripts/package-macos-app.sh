@@ -12,10 +12,13 @@ resolve_build_dir() {
     printf '%s' "${BUILD_DIR}"
     return
   fi
-  local universal="${ROOT}/.build/apple/Products/Release"
+  local universal="${ROOT}/.build/universal/release"
+  local apple="${ROOT}/.build/apple/Products/Release"
   local legacy="${ROOT}/.build/release"
   if [[ -f "${universal}/${EXEC_NAME}" ]]; then
     printf '%s' "${universal}"
+  elif [[ -f "${apple}/${EXEC_NAME}" ]]; then
+    printf '%s' "${apple}"
   else
     printf '%s' "${legacy}"
   fi
