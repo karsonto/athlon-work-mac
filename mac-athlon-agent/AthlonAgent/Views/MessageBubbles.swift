@@ -183,7 +183,7 @@ struct AssistantMessageBubble: View {
                 isReasoningExpanded = true
             }
         }
-        .onChange(of: message.content) { _, newContent in
+        .onValueChange(of: message.content) { newContent in
             if !newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 isReasoningExpanded = false
             }

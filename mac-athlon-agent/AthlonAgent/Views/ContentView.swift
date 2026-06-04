@@ -53,7 +53,7 @@ struct ContentView: View {
                     .onAppear {
                         clampSidebarWidths(for: geo.size.width)
                     }
-                    .onChange(of: geo.size.width) { _, width in
+                    .onValueChange(of: geo.size.width) { width in
                         clampSidebarWidths(for: width)
                     }
                 }

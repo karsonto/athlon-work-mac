@@ -1,0 +1,108 @@
+name: Build macOS 12
+
+on:
+  push:
+    branches:
+      - compat/macos-12
+    tags:
+      - 'v*-macos12'
+  pull_request:
+    branches:
+      - compat/macos-12
+  workflow_dispatch:
+
+concurrency:
+  group: build-macos12-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build macOS 12 App
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
+      - name: Resolve SwiftPM dependencies
+        run: |
+          cd mac-athlon-agent
+          swift --version
+          swift package resolve
+
+      - name: Patch dependencies for macOS 12
+        run: |
+          chmod +x mac-athlon-agent/Scripts/patch-dependencies-macos12.sh
+          mac-athlon-agent/Scripts/patch-dependencies-macos12.sh
+          test -d mac-athlon-agent/.build/checkouts/swift-sdk/Sources/MCP
+
+      - name: Build Release Binary
+        run: |
+          cd mac-athlon-agent
+          swift build -c release --product AthlonAgent
+
+      - name: Run Tests
+        run: |
+          cd mac-athlon-agent
+          swift test
+
+      - name: Create App Bundle
+        run: |
+          chmod +x mac-athlon-agent/Scripts/package-macos-app.sh
+          BUNDLE_DIR="${{ runner.temp }}/Athlon Agent.app"
+          BUILD_DIR="$(pwd)/mac-athlon-agent/.build/release" \
+            BUNDLE_DIR="${BUNDLE_DIR}" \
+            mac-athlon-agent/Scripts/package-macos-app.sh
+          echo "APP_BUNDLE=${BUNDLE_DIR}" >> $GITHUB_ENV
+
+      - name: Verify App Bundle
+        run: |
+          APP="${{ env.APP_BUNDLE }}"
+          test -x "${APP}/Contents/MacOS/AthlonAgent"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${APP}/Contents/Info.plist")" = "AthlonAgent"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "${APP}/Contents/Info.plist")" = "12.0"
+          test -d "${APP}/Contents/Resources/AthlonAgent_AthlonAgent.bundle"
+          codesign --verify --deep --strict "${APP}"
+
+      - name: Create DMG
+        run: |
+          APP_NAME="Athlon Agent"
+          DMG_NAME="AthlonAgent-macOS12"
+          STAGING="${{ runner.temp }}/dmg_staging"
+
+          mkdir -p "${STAGING}"
+          cp -R "${{ env.APP_BUNDLE }}" "${STAGING}/"
+          ln -s /Applications "${STAGING}/Applications"
+
+          hdiutil create \
+            -volname "${APP_NAME}" \
+            -srcfolder "${STAGING}" \
+            -ov \
+            -format UDZO \
+            "${{ runner.temp }}/${DMG_NAME}.dmg"
+
+          echo "DMG_PATH=${{ runner.temp }}/${DMG_NAME}.dmg" >> $GITHUB_ENV
+
+      - name: Upload DMG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AthlonAgent-macOS12
+          path: ${{ env.DMG_PATH }}
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: Athlon Agent ${{ github.ref_name }} (macOS 12+)
+          artifacts: ${{ env.DMG_PATH }}
+          generateReleaseNotes: true
+          token: ${{ secrets.GITHUB_TOKEN }}

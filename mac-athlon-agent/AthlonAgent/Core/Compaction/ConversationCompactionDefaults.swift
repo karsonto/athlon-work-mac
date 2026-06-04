@@ -37,6 +37,8 @@ Specific tasks remaining to achieve the session intent.
 
 Carefully read through the entire conversation history below and extract the most important context. Respond ONLY with the extracted context.
 
+{must_preserve}
+
 <messages>
 {messages}
 </messages>

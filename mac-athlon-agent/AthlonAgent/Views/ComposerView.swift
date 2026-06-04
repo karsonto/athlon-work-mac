@@ -73,7 +73,7 @@ struct ComposerView: View {
             .padding(.horizontal, LayoutMetrics.composerOuterPaddingHorizontal)
             .padding(.vertical, LayoutMetrics.composerOuterPaddingVertical)
         }
-        .onChange(of: messageText) { _, newValue in
+        .onValueChange(of: messageText) { newValue in
             handleAtTrigger(newValue)
             handleSlashTrigger(newValue)
         }

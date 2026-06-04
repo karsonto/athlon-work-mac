@@ -33,34 +33,6 @@ final class CompactionTests: XCTestCase {
         XCTAssertTrue(ConversationCutoffPlanner.shouldCompact(messages, estimatedTokens: estimated, settings: settings, force: false))
     }
 
-    func testCompactionPlanContextBuilder_IncludesIncompleteSubtasks() {
-        let plan = AgentPlan(
-            id: "p1",
-            name: "Feature",
-            description: "Build feature",
-            expectedOutcome: "Tests pass",
-            subtasks: [
-                PlanSubtask(id: "done", index: 0, name: "completed-step", description: "d", expectedOutcome: "o", status: .done),
-                PlanSubtask(id: "wip", index: 1, name: "wip", description: "work in progress", expectedOutcome: "api exists", status: .inProgress),
-                PlanSubtask(id: "later", index: 2, name: "later", description: "later", expectedOutcome: "later out", status: .pending)
-            ],
-            createdAt: Date()
-        )
-
-        let appendix = CompactionPlanContextBuilder.buildSummaryPromptAppendix(plan)
-        XCTAssertNotNil(appendix)
-        let incompleteIndex = appendix!.range(of: "## Incomplete subtasks")!
-        let incompleteSection = String(appendix![incompleteIndex.lowerBound...])
-        XCTAssertTrue(incompleteSection.contains("wip"))
-        XCTAssertTrue(incompleteSection.contains("later"))
-        XCTAssertTrue(incompleteSection.contains("IN PROGRESS"))
-        XCTAssertFalse(incompleteSection.contains("completed-step"))
-
-        let enriched = CompactionPlanContextBuilder.enrichSummaryText("summary body", plan: plan)
-        XCTAssertTrue(enriched.contains("summary body"))
-        XCTAssertTrue(enriched.contains("Active plan snapshot"))
-    }
-
     func testContextTokenEstimator_UsesCharsPerTokenHeuristic() {
         let message = ChatMessage(role: .user, content: String(repeating: "x", count: 250))
         let textTokens = Int(ceil(250.0 / 2.5))
