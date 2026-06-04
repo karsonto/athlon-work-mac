@@ -24,6 +24,7 @@ SWIFT_LINK_FLAGS=(
   -Xlinker -lswiftCompatibilityPacks
   -Xlinker -lswiftCompatibilityDynamicReplacements
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+  -Xlinker -headerpad_max_install_names
 )
 
 ARM_BIN="${ROOT}/.build/arm64-apple-macosx/release/AthlonAgent"

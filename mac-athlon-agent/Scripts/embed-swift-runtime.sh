@@ -11,6 +11,10 @@ HOST_SWIFT_DIR="/usr/lib/swift"
 EXTRACT_DIR="${SWIFT_RUNTIME_EXTRACT_DIR:-${ROOT}/.build/swift-runtime-extract}"
 EXTRACT_X86="${EXTRACT_DIR}/x86_64/usr/lib/swift"
 EXTRACT_ARM="${EXTRACT_DIR}/arm64e/usr/lib/swift"
+# macOS 12 dyld resolves @rpath unreliably when extra rpaths are present; use explicit paths.
+EXEC_FRAMEWORKS_PATH='@executable_path/../Frameworks'
+DYLIB_FRAMEWORKS_PATH='@loader_path'
+KEEP_RPATH="${EXEC_FRAMEWORKS_PATH}"
 
 collect_swift_lib_names() {
   local binary="$1"
@@ -22,7 +26,7 @@ collect_swift_lib_names() {
     otool -arch "${arch}" -L "${binary}" 2>/dev/null >> "${tmp}" || true
   done
 
-  grep -E '/usr/lib/swift/|@rpath/libswift' "${tmp}" \
+  grep -E '/usr/lib/swift/|@rpath/libswift|@executable_path/../Frameworks/libswift' "${tmp}" \
     | sed -E 's/^[[:space:]]+([^[:space:]]+).*/\1/' \
     | while IFS= read -r lib; do
         [[ -n "${lib}" ]] || continue
@@ -42,6 +46,60 @@ rehome_swift_reference() {
   for arch in x86_64 arm64; do
     install_name_tool -arch "${arch}" -change "${from}" "${to}" "${binary}" 2>/dev/null || true
   done
+}
+
+list_rpaths() {
+  local binary="$1"
+  otool -l "${binary}" 2>/dev/null \
+    | awk '/cmd LC_RPATH/{show=1; next} show && $1=="path"{gsub(/\(offset.*/,"",$2); print $2; show=0}'
+}
+
+clean_executable_rpaths() {
+  local executable="$1"
+  local rpath
+  local pass=0
+
+  while (( pass < 32 )); do
+    pass=$((pass + 1))
+    local removed=0
+    while IFS= read -r rpath; do
+      [[ -n "${rpath}" ]] || continue
+      [[ "${rpath}" == "${KEEP_RPATH}" ]] && continue
+      if install_name_tool -delete_rpath "${rpath}" "${executable}" 2>/dev/null; then
+        removed=1
+      fi
+    done < <(list_rpaths "${executable}")
+    (( removed )) || break
+  done
+
+  install_name_tool -add_rpath "${KEEP_RPATH}" "${executable}" 2>/dev/null || true
+}
+
+embedded_frameworks_path() {
+  local base="$1"
+  local for_dylib="${2:-0}"
+  if [[ "${for_dylib}" -eq 1 ]]; then
+    printf '%s/%s' "${DYLIB_FRAMEWORKS_PATH}" "${base}"
+  else
+    printf '%s/%s' "${EXEC_FRAMEWORKS_PATH}" "${base}"
+  fi
+}
+
+rehome_swift_libs_to_frameworks() {
+  local binary="$1"
+  local frameworks="$2"
+  local for_dylib="${3:-0}"
+  local base dest from
+
+  shopt -s nullglob
+  for base in "${frameworks}"/*.dylib; do
+    base="$(basename "${base}")"
+    dest="$(embedded_frameworks_path "${base}" "${for_dylib}")"
+    rehome_swift_reference "${binary}" "/usr/lib/swift/${base}" "${dest}"
+    rehome_swift_reference "${binary}" "@rpath/${base}" "${dest}"
+    rehome_swift_reference "${binary}" "${EXEC_FRAMEWORKS_PATH}/${base}" "${dest}"
+  done
+  shopt -u nullglob
 }
 
 resolve_swift_search_dirs() {
@@ -97,17 +155,17 @@ merge_swift_library_into_frameworks() {
 
   if [[ -f "${x86}" && -f "${arm}" ]]; then
     lipo -create -output "${dest}" "${x86}" "${arm}"
-    install_name_tool -id "@rpath/${base}" "${dest}" 2>/dev/null || true
+    install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${dest}" 2>/dev/null || true
     return 0
   fi
   if [[ -f "${x86}" ]]; then
     cp "${x86}" "${dest}"
-    install_name_tool -id "@rpath/${base}" "${dest}" 2>/dev/null || true
+    install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${dest}" 2>/dev/null || true
     return 0
   fi
   if [[ -f "${arm}" ]]; then
     cp "${arm}" "${dest}"
-    install_name_tool -id "@rpath/${base}" "${dest}" 2>/dev/null || true
+    install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${dest}" 2>/dev/null || true
     return 0
   fi
   return 1
@@ -128,7 +186,7 @@ copy_library_if_missing() {
   fi
 
   cp "${source}" "${frameworks}/${base}"
-  install_name_tool -id "@rpath/${base}" "${frameworks}/${base}" 2>/dev/null || true
+  install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${frameworks}/${base}" 2>/dev/null || true
 }
 
 ensure_swift_runtime_extract() {
@@ -181,7 +239,7 @@ embed_swift_runtime() {
   toolchain="$(resolve_toolchain)"
   mkdir -p "${frameworks}"
 
-  install_name_tool -add_rpath "@executable_path/../Frameworks" "${executable}" 2>/dev/null || true
+  install_name_tool -add_rpath "${KEEP_RPATH}" "${executable}" 2>/dev/null || true
 
   while IFS= read -r base; do
     [[ -n "${base}" ]] || continue
@@ -190,7 +248,7 @@ embed_swift_runtime() {
     copy_library_if_missing "${source}" "${frameworks}"
   done < <(collect_swift_lib_names "${executable}")
 
-  for required in libswiftCore.dylib libswift_Concurrency.dylib; do
+  for required in libswiftCore.dylib libswift_Concurrency.dylib libswiftCompatibilitySpan.dylib; do
     if [[ ! -f "${frameworks}/${required}" ]]; then
       source="$(find_swift_library_source "${required}" "${toolchain}" || true)"
       if [[ -n "${source}" ]]; then
@@ -199,26 +257,20 @@ embed_swift_runtime() {
     fi
   done
 
+  rehome_swift_libs_to_frameworks "${executable}" "${frameworks}" 0
+
   shopt -s nullglob
   for dylib in "${frameworks}"/*.dylib; do
     base="$(basename "${dylib}")"
-    rehome_swift_reference "${executable}" "/usr/lib/swift/${base}" "@rpath/${base}"
-  done
-
-  for dylib in "${frameworks}"/*.dylib; do
-    install_name_tool -id "@rpath/$(basename "${dylib}")" "${dylib}" 2>/dev/null || true
-    while IFS= read -r lib; do
-      [[ -n "${lib}" ]] || continue
-      base="$(basename "${lib}")"
-      if [[ -f "${frameworks}/${base}" ]]; then
-        rehome_swift_reference "${dylib}" "${lib}" "@rpath/${base}"
-      fi
-    done < <(otool -L "${dylib}" 2>/dev/null | grep -E '/usr/lib/swift/|@rpath/libswift' \
-      | sed -E 's/^[[:space:]]+([^[:space:]]+).*/\1/')
+    install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${dylib}" 2>/dev/null || true
+    rehome_swift_libs_to_frameworks "${dylib}" "${frameworks}" 1
   done
   shopt -u nullglob
 
   rm -f "${frameworks}"/*.original
+
+  clean_executable_rpaths "${executable}"
+  rehome_swift_libs_to_frameworks "${executable}" "${frameworks}" 0
 
   for required in libswiftCore.dylib libswift_Concurrency.dylib; do
     if [[ ! -f "${frameworks}/${required}" ]]; then
@@ -227,8 +279,25 @@ embed_swift_runtime() {
     fi
   done
 
-  if otool -arch x86_64 -L "${executable}" 2>/dev/null | grep -q '/usr/lib/swift/libswift_Concurrency.dylib'; then
-    echo "error: executable x86_64 slice still links /usr/lib/swift/libswift_Concurrency.dylib" >&2
+  if otool -arch x86_64 -L "${executable}" 2>/dev/null \
+    | grep -E '/usr/lib/swift/|@rpath/libswift' \
+    | grep -v '/usr/lib/swift/libswiftNetwork.dylib' \
+    | grep -q .; then
+    echo "error: executable x86_64 slice still uses /usr/lib/swift or @rpath for embedded Swift libraries" >&2
+    otool -arch x86_64 -L "${executable}" 2>/dev/null \
+      | grep -E '/usr/lib/swift/|@rpath/libswift' \
+      | grep -v '/usr/lib/swift/libswiftNetwork.dylib' >&2 || true
+    return 1
+  fi
+
+  if ! otool -arch x86_64 -L "${executable}" 2>/dev/null | grep -q "${EXEC_FRAMEWORKS_PATH}/libswiftCore.dylib"; then
+    echo "error: executable x86_64 slice must link ${EXEC_FRAMEWORKS_PATH}/libswiftCore.dylib" >&2
+    return 1
+  fi
+
+  if list_rpaths "${executable}" | grep -vx "${KEEP_RPATH}" | grep -q .; then
+    echo "error: unexpected LC_RPATH entries remain on executable" >&2
+    list_rpaths "${executable}" >&2
     return 1
   fi
 
