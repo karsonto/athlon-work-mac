@@ -92,8 +92,6 @@ struct SettingsPageView: View {
             workspaceSettingsContent
         case .appearance:
             appearanceSettingsContent
-        case .plan:
-            planSettingsContent
         case .agentTurn:
             agentTurnSettingsContent
         case .logging:
@@ -318,21 +316,6 @@ struct SettingsPageView: View {
         }
     }
 
-    private var planSettingsContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("计划模式")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(colors.text)
-
-            Toggle("自动续跑", isOn: $appState.settings.plan.autoContinueEnabled)
-            settingsIntField("最大自动续跑轮数", value: $appState.settings.plan.maxAutoContinueRounds)
-            settingsIntField("最大子任务数", value: $appState.settings.plan.maxSubtasks)
-            settingsIntField("Overview 最少字符", value: $appState.settings.plan.minOverviewChars)
-            settingsIntField("子任务描述最少字符", value: $appState.settings.plan.minSubtaskDescriptionChars)
-            settingsIntField("子任务验收最少字符", value: $appState.settings.plan.minSubtaskExpectedOutcomeChars)
-        }
-    }
-
     private var agentTurnSettingsContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("对话回合")
@@ -382,7 +365,7 @@ struct SettingsPageView: View {
                 TextEditor(text: $appState.settings.contextCompaction.summaryPrompt)
                     .font(.system(size: 11, design: .monospaced))
                     .frame(minHeight: 120)
-                    .scrollContentBackground(.hidden)
+                    .hideScrollContentBackgroundIfAvailable()
                     .padding(8)
                     .background(RoundedRectangle(cornerRadius: 8).fill(colors.panelAlt))
             }
@@ -560,7 +543,7 @@ struct SettingsPageView: View {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case model, compaction, mcp, skills, workspace, appearance, plan, agentTurn, logging, permissions, ignore
+    case model, compaction, mcp, skills, workspace, appearance, agentTurn, logging, permissions, ignore
 
     var id: String { rawValue }
 
@@ -572,7 +555,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .skills: "技能"
         case .workspace: "工作区"
         case .appearance: "外观"
-        case .plan: "计划"
         case .agentTurn: "对话回合"
         case .logging: "日志"
         case .permissions: "工具权限"
@@ -588,7 +570,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .skills: "sparkles"
         case .workspace: "folder"
         case .appearance: "paintbrush"
-        case .plan: "list.bullet.rectangle"
         case .agentTurn: "clock"
         case .logging: "doc.text"
         case .permissions: "lock.shield"

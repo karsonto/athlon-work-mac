@@ -7,13 +7,25 @@ enum ContextTokenEstimator {
     private static let toolCallOverhead = 10
     private static let toolResultOverhead = 8
 
-    static func estimate(_ messages: [ChatMessage], includeReasoningInModelContext: Bool = false) -> Int {
+    static func estimateTextTokens(_ text: String?, calibrationMultiplier: Double = 1.0) -> Int {
+        let tokens = estimateTextTokens(text)
+        if calibrationMultiplier <= 0 || abs(calibrationMultiplier - 1.0) < 0.001 { return tokens }
+        return Int(ceil(Double(tokens) * calibrationMultiplier))
+    }
+
+    static func estimate(
+        _ messages: [ChatMessage],
+        includeReasoningInModelContext: Bool = false,
+        calibrationMultiplier: Double = 1.0
+    ) -> Int {
         guard !messages.isEmpty else { return 0 }
-        return messages.reduce(0) { partial, message in
+        let total = messages.reduce(0) { partial, message in
             message.role == .compaction
                 ? partial
                 : partial + estimateMessage(message, includeReasoningInModelContext: includeReasoningInModelContext)
         }
+        if calibrationMultiplier <= 0 || abs(calibrationMultiplier - 1.0) < 0.001 { return total }
+        return Int(ceil(Double(total) * calibrationMultiplier))
     }
 
     static func estimateMessage(_ message: ChatMessage, includeReasoningInModelContext: Bool = false) -> Int {
@@ -73,7 +85,7 @@ enum ContextTokenEstimator {
         return tokens
     }
 
-    private static func estimateTextTokens(_ text: String?) -> Int {
+    static func estimateTextTokens(_ text: String?) -> Int {
         guard let text, !text.isEmpty else { return 0 }
         return Int(ceil(Double(text.count) / charsPerToken))
     }

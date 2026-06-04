@@ -346,7 +346,7 @@ struct MarkdownContent: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: text) { _, _ in
+        .onValueChange(of: text) { _ in
             contentHeight = 32
         }
     }
@@ -389,8 +389,7 @@ struct MarkdownToolbar: View {
     private func toolbarButton(_ text: String, title: String, italic: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(text)
-                .font(.system(size: 12, weight: italic ? .regular : .medium))
-                .italic(italic)
+                .font(italic ? Font.system(size: 12).italic() : Font.system(size: 12, weight: .medium))
                 .frame(minWidth: 24, minHeight: 22)
                 .foregroundColor(Color(hex: "#A1A1AA"))
         }

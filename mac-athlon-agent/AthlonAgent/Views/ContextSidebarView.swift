@@ -16,8 +16,7 @@ struct ContextSidebarView: View {
                 .foregroundColor(colors.border)
 
             GeometryReader { geo in
-                let planReserve: CGFloat = appState.plan == nil ? 0 : 140
-                let bodyHeight = max(geo.size.height - planReserve, 160)
+                let bodyHeight = geo.size.height
                 let topHeight = min(max(bodyHeight * 0.42, 120), 360)
 
                 VStack(spacing: 0) {
@@ -40,12 +39,6 @@ struct ContextSidebarView: View {
                 .frame(width: geo.size.width, height: geo.size.height)
             }
             .frame(maxHeight: .infinity)
-
-            if let plan = appState.plan {
-                Divider()
-                    .foregroundColor(colors.border)
-                planTrackerSection(plan)
-            }
         }
     }
 
@@ -174,36 +167,6 @@ struct ContextSidebarView: View {
                 .stroke(colors.border, lineWidth: 1)
                 .background(RoundedRectangle(cornerRadius: 12).fill(colors.panelAlt))
         )
-    }
-
-    private func planTrackerSection(_ plan: AgentPlan) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "list.clipboard")
-                    .font(.system(size: 12))
-                Text(plan.name)
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-            }
-            .foregroundColor(colors.subtleText)
-
-            ForEach(plan.subtasks) { subtask in
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(subtask.status == .done ? Color(hex: "#22C55E") :
-                              subtask.status == .inProgress ? Color(hex: "#6366F1") :
-                              Color(hex: "#52525B"))
-                        .frame(width: 6, height: 6)
-                    Text(subtask.name)
-                        .font(.system(size: 11))
-                        .foregroundColor(colors.text)
-                        .lineLimit(1)
-                    Spacer()
-                }
-            }
-        }
-        .padding(12)
-        .background(colors.panelAlt)
     }
 }
 

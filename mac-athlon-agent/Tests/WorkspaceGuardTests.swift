@@ -25,7 +25,6 @@ final class WorkspaceGuardTests: XCTestCase {
             workspaceService: WorkspaceService(),
             settings: .default,
             skillService: SkillService(),
-            sessionContext: DefaultAgentSessionContext(),
             mcpRegistry: MockMcpRegistryForWorkspace(),
             sessionWorkspacePath: temp.path
         )

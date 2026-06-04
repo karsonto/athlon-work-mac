@@ -35,13 +35,12 @@ final class CompositeToolRouterTests: XCTestCase {
             workspaceService: WorkspaceService(),
             settings: .default,
             skillService: SkillService(),
-            sessionContext: DefaultAgentSessionContext(),
             mcpRegistry: MockMcpRegistry(),
             executeCommandRegistry: ExecuteCommandProcessRegistry()
         )
 
         let tools = await router.listToolDefinitions()
-        XCTAssertGreaterThanOrEqual(tools.count, 12)
+        XCTAssertGreaterThanOrEqual(tools.count, 9)
 
         let mcpTool = tools.first { $0.name == "filesystem__list" }
         XCTAssertNotNil(mcpTool)

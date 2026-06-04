@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "AthlonAgent",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v12)
     ],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", exact: "0.12.1")

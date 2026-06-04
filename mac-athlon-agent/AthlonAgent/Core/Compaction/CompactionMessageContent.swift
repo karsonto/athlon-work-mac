@@ -14,7 +14,9 @@ enum CompactionMessageContent {
         transcriptPath: String?,
         summaryPreview: String,
         strategy: CompactionStrategy = .conversationCompact,
-        layers: [CompactionLayer]? = nil
+        layers: [CompactionLayer]? = nil,
+        pressure: ContextPressureLevel? = nil,
+        utilization: Double? = nil
     ) -> String {
         let summary: String
         if summaryPreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -31,7 +33,9 @@ enum CompactionMessageContent {
             strategy: strategy,
             layers: layers,
             originalMessageCount: originalMessageCount,
-            transcriptPath: transcriptPath
+            transcriptPath: transcriptPath,
+            pressure: pressure,
+            utilization: utilization
         )
     }
 
@@ -87,7 +91,9 @@ enum CompactionMessageContent {
         originalMessageCount: Int,
         transcriptPath: String,
         summaryPreview: String,
-        layers: [CompactionLayer]? = [.conversationCompact]
+        layers: [CompactionLayer]? = [.conversationCompact],
+        pressure: ContextPressureLevel? = nil,
+        utilization: Double? = nil
     ) -> String {
         let summary: String
         if summaryPreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -104,7 +110,9 @@ enum CompactionMessageContent {
             strategy: .manualCompact,
             layers: layers,
             originalMessageCount: originalMessageCount,
-            transcriptPath: transcriptPath
+            transcriptPath: transcriptPath,
+            pressure: pressure,
+            utilization: utilization
         )
     }
 
@@ -122,7 +130,9 @@ enum CompactionMessageContent {
         clearedToolMessages: Int? = nil,
         keepToolMessages: Int? = nil,
         originalMessageCount: Int? = nil,
-        transcriptPath: String? = nil
+        transcriptPath: String? = nil,
+        pressure: ContextPressureLevel? = nil,
+        utilization: Double? = nil
     ) -> String {
         var lines: [String] = []
         lines.append("CompactionKind: \(kind.rawValue.lowercased())")
@@ -131,6 +141,12 @@ enum CompactionMessageContent {
         }
         if let layers, !layers.isEmpty {
             lines.append("CompactionLayers: \(CompactionAuditDisplay.formatLayers(layers))")
+        }
+        if let pressure {
+            lines.append("ContextPressure: \(pressure.rawValue)")
+        }
+        if let utilization {
+            lines.append(String(format: "ContextUtilization: %.1f%%", utilization * 100))
         }
         lines.append("TokensBefore: \(tokensBefore)")
         lines.append("TokensAfter: \(tokensAfter)")

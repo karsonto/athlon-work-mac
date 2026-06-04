@@ -11,9 +11,6 @@ struct EnvironmentPromptContext {
     let ignorePatterns: [String]
     let tools: [ToolDefinition]
     let skillsDirectory: String
-    let interactionMode: AgentInteractionMode
-    let planAutoContinueEnabled: Bool
-    let planMaxSubtasks: Int
 
     var hasWorkspace: Bool {
         guard let workspaceRoot else { return false }
@@ -37,8 +34,6 @@ struct SystemPromptOrchestrator {
         appendBasePersona(&builder)
         appendHostEnvironment(&builder)
         appendWorkspacePolicy(&builder, context: context)
-        appendPlanModePolicy(&builder, context: context)
-        appendPlanExecutionPolicy(&builder, context: context)
         appendFileToolsPolicy(&builder)
         appendToolsPolicy(&builder, context: context)
         appendSkillsList(&builder, skills: skills)
@@ -62,10 +57,7 @@ struct SystemPromptOrchestrator {
             workspaceName: workspace?.name,
             ignorePatterns: workspace?.ignorePatterns ?? settings.workspaceIgnore.directoryNames,
             tools: tools,
-            skillsDirectory: skillsDirectory,
-            interactionMode: session.interactionMode,
-            planAutoContinueEnabled: settings.plan.autoContinueEnabled,
-            planMaxSubtasks: settings.plan.maxSubtasks
+            skillsDirectory: skillsDirectory
         )
     }
 
@@ -139,60 +131,7 @@ struct SystemPromptOrchestrator {
         }
         builder += "Workspace contents are intentionally not embedded in this prompt because they change often.\n"
         builder += "Use file_list to fetch a live directory listing when needed.\n"
-        if context.interactionMode == .agent {
-            appendPlanningGuidance(&builder, context: context)
-        }
         builder += "\n"
-    }
-
-    private func appendPlanModePolicy(_ builder: inout String, context: EnvironmentPromptContext) {
-        guard context.interactionMode == .plan else { return }
-        builder += "Plan mode (spec-first workflow):\n"
-        builder += "- You are in Plan mode: research and specify before implementation. Do not write files, edit files, or run commands.\n"
-        builder += "- Separate what to build from building it. The user approves the plan via the Build button before any execution.\n"
-        builder += "\nWhen to create a plan:\n"
-        builder += "- Complex features with multiple approaches; tasks touching many files or systems; unclear requirements; architectural decisions.\n"
-        builder += "- For small, obvious one-file fixes, a full plan is optional — still answer concisely.\n"
-        builder += "\nWorkflow:\n"
-        builder += "- Research first: use file_list, file_read, grep_files, glob_files; do not guess file contents.\n"
-        builder += "- Clarify when needed: ask focused questions before locking the plan.\n"
-        builder += "- Create a detailed plan: call create_plan with ordered subtasks (up to \(context.planMaxSubtasks)). "
-        builder += "Provide overview (Markdown), optional architecture/mermaid/testing/out_of_scope, and subtasks with concrete repo-relative files and measurable expected_outcome.\n"
-        builder += "- Do not hand-write plan.md with file_write; plan tools sync it automatically.\n"
-        builder += "- Use get_plan to review the current draft plan and subtask states.\n"
-        builder += "- Do not call finish_subtask in Plan mode. Tell the user to review plan.md and click Build to execute.\n"
-        builder += "\ncreate_plan document shape (Cursor-style):\n"
-        builder += "- overview: background, goals, constraints, key decisions (required, substantive Markdown).\n"
-        builder += "- architecture / mermaid: use for multi-step or cross-cutting work.\n"
-        builder += "- Each subtask: name, description, expected_outcome (verifiable), files[] (paths you will touch).\n"
-        builder += "\nAfter the plan is ready:\n"
-        builder += "- Summarize briefly and ask the user to review plan.md and click Build when ready.\n"
-        builder += "\n"
-    }
-
-    private func appendPlanExecutionPolicy(_ builder: inout String, context: EnvironmentPromptContext) {
-        guard context.interactionMode == .agent,
-              context.session.plan?.phase == .approved else { return }
-        builder += "Approved plan execution:\n"
-        builder += "- Call get_plan first. Work subtasks in order; call finish_subtask with concrete measurable outcomes.\n"
-        builder += "- Only get_plan and finish_subtask are available for plan management during execution.\n"
-        builder += "\n"
-    }
-
-    private func appendPlanningGuidance(_ builder: inout String, context: EnvironmentPromptContext) {
-        builder += "Planning for multi-step or long-running tasks:\n"
-        builder += "- For requests that span multiple turns, many files, or roughly more than 30 minutes of work, call create_plan first; do not attempt the entire scope in one turn.\n"
-        builder += "- Split work into granular subtasks (up to \(context.planMaxSubtasks)): each subtask must be a smallest verifiable unit completable in one focused turn (e.g. add API + unit test), not vague goals like \"finish the module\".\n"
-        builder += "- Name each subtask and fill description / expectedOutcome with concrete, measurable details (paths, types, commands, acceptance criteria); avoid vague phrases like \"improve code\" or \"polish feature\".\n"
-        builder += "- Prefer more short subtasks over a few large ones; use create_plan to replace the plan if scope changes.\n"
-        builder += "- Use create_plan to define the plan and ordered subtasks (do not hand-write plan.md with file_write).\n"
-        builder += "- Execute one in-progress subtask at a time; after each step, call finish_subtask with a specific measurable outcome.\n"
-        builder += "- Use get_plan when you need the full current plan and subtask states.\n"
-        builder += "- plan.md is synced automatically by plan tools; do not edit checkboxes in plan.md with file_edit unless the user explicitly asks.\n"
-        if context.planAutoContinueEnabled {
-            builder += "- While a subtask is in progress, the client may auto-send a continue instruction when a turn ends; do not claim the overall task is complete until every subtask is done or abandoned.\n"
-            builder += "- If the current subtask is still too large for one turn, split remaining work into smaller subtasks via create_plan before continuing.\n"
-        }
     }
 
     private func appendFileToolsPolicy(_ builder: inout String) {
@@ -206,13 +145,7 @@ struct SystemPromptOrchestrator {
 
     private func appendToolsPolicy(_ builder: inout String, context: EnvironmentPromptContext) {
         builder += "Tools:\n"
-        if context.interactionMode == .plan {
-            builder += "Plan mode: read-only file tools plus create_plan and get_plan. No file_write, file_edit, or execute_command.\n"
-        } else if context.session.plan?.phase == .approved {
-            builder += "Agent mode with approved plan: use get_plan and finish_subtask; other native tools per schema.\n"
-        } else {
-            builder += "Native tools via function calling; long tasks use create_plan with granular subtasks. Use each tool's schema.\n"
-        }
+        builder += "Native tools via function calling. Use each tool's schema.\n"
         builder += "Do not guess file contents.\n"
         builder += "\n"
 

@@ -77,9 +77,6 @@ final class AppState: ObservableObject {
     // MARK: - Settings
     @Published var settings: AppSettings = AppSettings.default
 
-    // MARK: - Interaction mode (aligned with WPF Plan/Agent toggle)
-    @Published var interactionMode: AgentInteractionMode = .agent
-
     // MARK: - Services
     private(set) var themeManager: ThemeManager!
     private(set) var sessionManager: SessionManager!
@@ -88,12 +85,8 @@ final class AppState: ObservableObject {
     private(set) var skillService: SkillService!
     private(set) var workspaceService: WorkspaceService!
     private(set) var imageAttachmentService: ImageAttachmentService!
-    private(set) var planViewModel: PlanViewModel?
     private(set) var sessionTurnHost: SessionTurnHost!
-    private var planWorkspaceGuard: WorkspaceGuard!
-    private(set) var planNotebook: PlanNotebook!
     private let executeCommandRegistry = ExecuteCommandProcessRegistry()
-    private let planAutoContinueTracker = PlanAutoContinueTracker()
     private var uiControllers: [String: SessionTurnUiController] = [:]
     private let sessionUiCache = SessionUiCache()
     private var uiSettingsSaveWorkItem: DispatchWorkItem?
@@ -130,14 +123,6 @@ final class AppState: ObservableObject {
     var isAgentRunning: Bool {
         guard let id = activeSessionId else { return false }
         return sessionTurnHost.isRunning(id)
-    }
-
-    var plan: AgentPlan? {
-        guard let id = activeSessionId,
-              let session = sessions.first(where: { $0.id == id }) else {
-            return nil
-        }
-        return session.plan
     }
 
     // Convenience: workspace files from workspace service
@@ -178,19 +163,12 @@ final class AppState: ObservableObject {
         skillService.reload(savedSettings: settings.skills)
         workspaceService = WorkspaceService(ignorePatterns: settings.workspaceIgnore.directoryNames)
         imageAttachmentService = ImageAttachmentService()
-        planWorkspaceGuard = WorkspaceGuard(workspaceService: workspaceService, settings: settings)
-        planNotebook = PlanNotebook(
-            settings: settings.plan,
-            workspaceGuard: planWorkspaceGuard,
-            sessionManager: sessionManager
-        )
         agentRuntime.configureDependencies(
             workspaceService: workspaceService,
             skillService: skillService,
             sessionManager: sessionManager,
             mcpClientService: mcpClientService,
-            executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook
+            executeCommandRegistry: executeCommandRegistry
         )
 
         sessionManager.loadSessions()
@@ -205,9 +183,7 @@ final class AppState: ObservableObject {
         }
 
         if let id = activeSessionId {
-            planViewModel = PlanViewModel(sessionManager: sessionManager, sessionId: id)
             if let session = sessionManager.getSession(id) {
-                interactionMode = session.interactionMode
                 applySessionWorkspace(for: session)
             }
         }
@@ -278,54 +254,8 @@ final class AppState: ObservableObject {
             skillService: skillService,
             sessionManager: sessionManager,
             mcpClientService: mcpClientService,
-            executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook
+            executeCommandRegistry: executeCommandRegistry
         )
-    }
-
-    var canBuildPlan: Bool {
-        !isBusy && interactionMode == .plan && plan?.phase == .draft
-    }
-
-    var planFilePathForEditor: String? {
-        planFilePath()
-    }
-
-    func setInteractionMode(_ mode: AgentInteractionMode) {
-        interactionMode = mode
-        guard let id = activeSessionId else { return }
-        sessionManager.updateSession(id) { $0.interactionMode = mode }
-        if let index = sessions.firstIndex(where: { $0.id == id }) {
-            sessions[index].interactionMode = mode
-        }
-    }
-
-    func togglePlanMode() {
-        setInteractionMode(interactionMode == .plan ? .agent : .plan)
-    }
-
-    func buildPlan() {
-        guard let id = activeSessionId else { return }
-        guard canBuildPlan else { return }
-        let result = planNotebook.approvePlan(sessionId: id)
-        if !result.success {
-            appendSystemMessage(result.message, sessionId: id)
-            return
-        }
-        setInteractionMode(.agent)
-        planViewModel?.loadPlan()
-        if let path = planFilePath() {
-            openFileEditor(path: path)
-        }
-        sendMessage(PlanExecuteDefaults.executeUserMessage.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    private func planFilePath() -> String? {
-        guard let root = workspaceRootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !root.isEmpty else {
-            return nil
-        }
-        let fileName = settings.plan.planFileName.isEmpty ? "plan.md" : settings.plan.planFileName
-        return (root as NSString).appendingPathComponent(fileName)
     }
 
     private func applyUiSettings() {
@@ -396,7 +326,6 @@ final class AppState: ObservableObject {
         sessions = sessionManager.sessions
         activeSessionId = session.id
         messages = []
-        planViewModel = PlanViewModel(sessionManager: sessionManager, sessionId: session.id)
         sessionGroups = buildSessionGroups()
         currentPage = .chat
     }
@@ -412,7 +341,6 @@ final class AppState: ObservableObject {
         }
 
         sessionTurnHost.dropSession(sessionId)
-        planAutoContinueTracker.reset(sessionId)
         uiControllers.removeValue(forKey: sessionId)
 
         let wasActive = activeSessionId == sessionId
@@ -449,10 +377,8 @@ final class AppState: ObservableObject {
         sessionManager.activateSession(sessionId)
         if let session = sessionManager.getSession(sessionId) {
             messages = session.messages
-            interactionMode = session.interactionMode
             applySessionWorkspace(for: session)
         }
-        planViewModel = PlanViewModel(sessionManager: sessionManager, sessionId: sessionId)
         sessionGroups = buildSessionGroups()
         currentPage = .chat
     }
@@ -460,8 +386,6 @@ final class AppState: ObservableObject {
     func sendMessage(_ text: String) {
         guard let id = activeSessionId, var session = sessionManager.getSession(id) else { return }
         currentPage = .chat
-        planAutoContinueTracker.reset(id)
-
         let ui = uiController(for: id)
         let images = pendingImageAttachments
         pendingImageAttachments = []
@@ -487,7 +411,6 @@ final class AppState: ObservableObject {
         )
         ui.addUserMessage(expanded, imageAttachments: images)
         session.isRunning = true
-        session.interactionMode = interactionMode
         if let workspaceRootPath {
             session.activeWorkspace = workspaceRootPath
             session.workspaceName = activeWorkspaceName
@@ -989,15 +912,7 @@ final class AppState: ObservableObject {
         }
         sessionManager.persistSession(event.sessionId)
 
-        if event.sessionId == activeSessionId {
-            planViewModel?.loadPlan()
-            if let session = sessionManager.getSession(event.sessionId) {
-                interactionMode = session.interactionMode
-            }
-        }
-
         if tryProcessNextQueuedTurn(event) { return }
-        trySchedulePlanAutoContinue(event)
         syncQueuedTurns(sessionId: event.sessionId)
         updateBusyState()
         sessionGroups = buildSessionGroups()
@@ -1034,48 +949,6 @@ final class AppState: ObservableObject {
         }
         updateBusyState()
         return true
-    }
-
-    private func trySchedulePlanAutoContinue(_ event: SessionTurnCompletedEvent) {
-        guard !sessionTurnHost.hasQueuedTurns(sessionId: event.sessionId) else { return }
-
-        let planSettings = settings.plan
-        let plan = sessionManager.getSession(event.sessionId)?.plan
-        let completedRounds = planAutoContinueTracker.get(event.sessionId)
-
-        guard PlanAutoContinuePolicy.shouldScheduleContinue(
-            autoContinueEnabled: planSettings.autoContinueEnabled,
-            completedAutoContinueRounds: completedRounds,
-            maxRounds: planSettings.maxAutoContinueRounds,
-            cancelled: event.cancelled,
-            timedOut: event.timedOut,
-            error: event.error,
-            plan: plan
-        ) else { return }
-
-        let ui = uiController(for: event.sessionId)
-        let input = PlanAutoContinueDefaults.continueUserMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        ui.addUserMessage(input)
-
-        var session = event.session
-        if let latest = sessionManager.getSession(event.sessionId) {
-            session = latest
-        }
-
-        let request = SessionTurnRequest(
-            sessionId: event.sessionId,
-            session: session,
-            userInput: input,
-            imageAttachments: [],
-            ui: ui,
-            isAutoContinue: true
-        )
-
-        if sessionTurnHost.tryStart(request) == nil {
-            planAutoContinueTracker.increment(event.sessionId)
-            sessionManager.setRunning(true, for: event.sessionId)
-            updateBusyState()
-        }
     }
 
     private func syncQueuedTurns(sessionId: String) {
@@ -1125,8 +998,6 @@ final class AppState: ObservableObject {
 
         会话 ID、工作区与标题会保留；磁盘上的 transcript 归档不会删除。
 
-        同时将清除内存中的计划并删除工作区 plan.md（若存在）。
-
         下次发送消息时会重新构建系统提示（工作区、工具、技能等）。
         """
         alert.alertStyle = .warning
@@ -1157,8 +1028,6 @@ final class AppState: ObservableObject {
             session.isRunning = false
         }
         sessionManager.clearConversationDisplay(sessionId: id)
-        planViewModel?.clearPlan()
-        deleteWorkspacePlanFileIfPresent()
         sessionGroups = buildSessionGroups()
         updateBusyState()
     }
@@ -1168,16 +1037,6 @@ final class AppState: ObservableObject {
         guard sessionTurnHost.removeQueued(sessionId: id, queueId: queueId) else { return }
         sessionManager.setQueuedTurnCount(sessionTurnHost.queueCount(sessionId: id), for: id)
         syncQueuedTurns(sessionId: id)
-    }
-
-    private func deleteWorkspacePlanFileIfPresent() {
-        guard let root = workspaceRootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !root.isEmpty else { return }
-        let fileName = settings.plan.planFileName.isEmpty ? "plan.md" : settings.plan.planFileName
-        let path = (root as NSString).appendingPathComponent(fileName)
-        if FileManager.default.fileExists(atPath: path) {
-            try? FileManager.default.removeItem(atPath: path)
-        }
     }
 
     func toggleContextSidebar() {
@@ -1228,7 +1087,6 @@ final class AppState: ObservableObject {
         workspaceRootPath = path
         workspaceService.setWorkspaceRoot(path)
         workspaceService.startMonitoring()
-        planWorkspaceGuard.sessionRootPath = path
         activeWorkspace = path
         activeWorkspaceName = (path as NSString).lastPathComponent
         mcpClientService.refreshConnections(settings: settings.mcpServers, workspaceRoot: path)
@@ -1242,11 +1100,6 @@ final class AppState: ObservableObject {
 
     func refreshWorkspace() {
         workspaceService.scanWorkspace()
-    }
-
-    // MARK: - Plan Operations
-    func updatePlanSubtask(subtaskId: String, status: PlanSubtaskStatus, outcome: String?) {
-        planViewModel?.updateSubtaskStatus(subtaskId, to: status, outcome: outcome)
     }
 
     // MARK: - Cleanup

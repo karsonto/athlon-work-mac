@@ -8,7 +8,8 @@ struct TruncateArgsService {
 
     func applyToMessages(
         _ messages: [ChatMessage],
-        settings: ContextCompactionSettings
+        settings: ContextCompactionSettings,
+        keepTokenBudgetOverride: Int? = nil
     ) -> (messages: [ChatMessage], changed: Bool) {
         let truncateSettings = settings.truncateArgs
         if !truncateSettings.enabled || messages.isEmpty {
@@ -24,19 +25,30 @@ struct TruncateArgsService {
             conversation,
             includeReasoningInModelContext: settings.includeReasoningInModelContext
         )
-        if !ConversationCutoffPlanner.shouldTruncateArgs(
-            conversation,
-            estimatedTokens: estimatedTokens,
-            settings: truncateSettings
-        ) {
-            return (messages, false)
+        if keepTokenBudgetOverride == nil || keepTokenBudgetOverride! <= 0 {
+            if !ConversationCutoffPlanner.shouldTruncateArgs(
+                conversation,
+                estimatedTokens: estimatedTokens,
+                settings: truncateSettings
+            ) {
+                return (messages, false)
+            }
         }
 
-        let cutoff = ConversationCutoffPlanner.determineTruncateArgsCutoff(
-            conversation,
-            settings: truncateSettings,
-            includeReasoningInModelContext: settings.includeReasoningInModelContext
-        )
+        let cutoff: Int
+        if let keepTokenBudgetOverride, keepTokenBudgetOverride > 0 {
+            cutoff = ConversationCutoffPlanner.determineTruncateArgsCutoffFromKeepBudget(
+                conversation,
+                keepTokenBudget: keepTokenBudgetOverride,
+                includeReasoningInModelContext: settings.includeReasoningInModelContext
+            )
+        } else {
+            cutoff = ConversationCutoffPlanner.determineTruncateArgsCutoff(
+                conversation,
+                settings: truncateSettings,
+                includeReasoningInModelContext: settings.includeReasoningInModelContext
+            )
+        }
         if cutoff >= conversation.count {
             return (messages, false)
         }

@@ -38,8 +38,26 @@ enum ConversationCutoffPlanner {
     static func determineCutoffIndex(
         _ messages: [ChatMessage],
         estimatedTokens: Int,
-        settings: ContextCompactionSettings
+        settings: ContextCompactionSettings,
+        keepTokenBudgetOverride: Int? = nil
     ) -> Int {
+        if let keepTokenBudgetOverride, keepTokenBudgetOverride > 0, settings.dynamicCompaction.enableSemanticCutoff {
+            return SemanticCutoffPlanner.determineCutoffIndex(
+                conversation: messages,
+                settings: settings,
+                keepTokenBudget: keepTokenBudgetOverride
+            )
+        }
+
+        if let keepTokenBudgetOverride, keepTokenBudgetOverride > 0 {
+            let rawCutoff = determineTruncateArgsCutoffFromKeepBudget(
+                messages,
+                keepTokenBudget: keepTokenBudgetOverride,
+                includeReasoningInModelContext: settings.includeReasoningInModelContext
+            )
+            return findSafeCutoffPoint(messages, cutoffIndex: rawCutoff)
+        }
+
         let rawCutoff: Int
         if settings.keepTokens > 0 {
             rawCutoff = findTokenBasedCutoff(
@@ -52,6 +70,27 @@ enum ConversationCutoffPlanner {
             rawCutoff = findMessageBasedCutoff(messages, keepMessages: settings.keepMessages)
         }
         return findSafeCutoffPoint(messages, cutoffIndex: rawCutoff)
+    }
+
+    static func determineTruncateArgsCutoffFromKeepBudget(
+        _ messages: [ChatMessage],
+        keepTokenBudget: Int,
+        includeReasoningInModelContext: Bool = false
+    ) -> Int {
+        if keepTokenBudget <= 0 || messages.isEmpty { return messages.count }
+
+        var tokensKept = 0
+        for index in stride(from: messages.count - 1, through: 0, by: -1) {
+            let messageTokens = ContextTokenEstimator.estimateMessage(
+                messages[index],
+                includeReasoningInModelContext: includeReasoningInModelContext
+            )
+            if tokensKept + messageTokens > keepTokenBudget {
+                return index + 1
+            }
+            tokensKept += messageTokens
+        }
+        return 0
     }
 
     static func determineTruncateArgsCutoff(

@@ -19,6 +19,7 @@ final class AgentRuntime: @unchecked Sendable {
     private let systemPromptOrchestrator: SystemPromptOrchestrator
     private let preCompletionPipeline: PreCompletionPipeline
     private let toolResultEvictor: ToolResultEvictor
+    private let tokenEstimatorCalibrator: TokenEstimatorCalibrator
     private let settings: AppSettings
     private let skillsProvider: () -> [AvailableSkillInfo]
 
@@ -30,6 +31,7 @@ final class AgentRuntime: @unchecked Sendable {
         systemPromptOrchestrator: SystemPromptOrchestrator,
         preCompletionPipeline: PreCompletionPipeline,
         toolResultEvictor: ToolResultEvictor,
+        tokenEstimatorCalibrator: TokenEstimatorCalibrator,
         skillsProvider: @escaping () -> [AvailableSkillInfo]
     ) {
         self.settings = settings
@@ -39,6 +41,7 @@ final class AgentRuntime: @unchecked Sendable {
         self.systemPromptOrchestrator = systemPromptOrchestrator
         self.preCompletionPipeline = preCompletionPipeline
         self.toolResultEvictor = toolResultEvictor
+        self.tokenEstimatorCalibrator = tokenEstimatorCalibrator
         self.skillsProvider = skillsProvider
     }
 
@@ -54,8 +57,12 @@ final class AgentRuntime: @unchecked Sendable {
             modelClient: modelClient,
             storage: storage
         )
-        let pipeline = PreCompletionPipeline(conversationCompactor: compactor)
+        let pipeline = PreCompletionPipeline(
+            conversationCompactor: compactor,
+            settings: settings.contextCompaction
+        )
         let evictor = ToolResultEvictor(settings: settings.contextCompaction, storage: storage)
+        let calibrator = TokenEstimatorCalibrator(settings: settings.contextCompaction)
         let orchestrator = SystemPromptOrchestrator(settings: settings)
         return AgentRuntime(
             settings: settings,
@@ -65,6 +72,7 @@ final class AgentRuntime: @unchecked Sendable {
             systemPromptOrchestrator: orchestrator,
             preCompletionPipeline: pipeline,
             toolResultEvictor: evictor,
+            tokenEstimatorCalibrator: calibrator,
             skillsProvider: skillsProvider
         )
     }
@@ -83,11 +91,7 @@ final class AgentRuntime: @unchecked Sendable {
         var workingSession = session
 
         let allTools = await toolRouter.listToolDefinitions()
-        let tools = PlanToolCatalog.filterForSession(
-            allTools,
-            mode: workingSession.interactionMode,
-            plan: workingSession.plan
-        )
+        let tools = allTools
         let frozenPrompt = systemPromptOrchestrator.prepareForTurn(
             session: workingSession,
             tools: tools,
@@ -122,21 +126,29 @@ final class AgentRuntime: @unchecked Sendable {
 
         while true {
             try Task.checkCancellation()
-            workingSession = await runPreCompletionPipeline(
-                session: workingSession,
-                callbacks: callbacks,
-                options: .agentLoop
-            )
 
-            if let onTarget = callbacks?.onStreamingAssistantTarget {
-                await onTarget(turnAssistantId)
-            }
-
-            let environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
+            var environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
                 frozen: frozenPrompt,
                 session: workingSession,
                 tools: tools
             )
+            workingSession = await runPreCompletionPipeline(
+                session: workingSession,
+                callbacks: callbacks,
+                options: .agentLoop,
+                environmentPrompt: environmentPrompt,
+                tools: tools
+            )
+
+            environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
+                frozen: frozenPrompt,
+                session: workingSession,
+                tools: tools
+            )
+            if let onTarget = callbacks?.onStreamingAssistantTarget {
+                await onTarget(turnAssistantId)
+            }
+
             let modelMessages = Self.buildModelMessages(
                 environmentPrompt: environmentPrompt,
                 history: workingSession.messages,
@@ -148,7 +160,8 @@ final class AgentRuntime: @unchecked Sendable {
                 callbacks: callbacks,
                 modelMessages: modelMessages,
                 tools: tools,
-                frozenPrompt: frozenPrompt
+                frozenPrompt: frozenPrompt,
+                environmentPrompt: environmentPrompt
             )
             workingSession = completion.session
             let response = completion.response
@@ -204,7 +217,8 @@ final class AgentRuntime: @unchecked Sendable {
         callbacks: AgentTurnCallbacks?,
         modelMessages: [AgentModelMessage],
         tools: [ToolDefinition],
-        frozenPrompt: FrozenSystemPrompt
+        frozenPrompt: FrozenSystemPrompt,
+        environmentPrompt: String
     ) async throws -> (session: AgentSession, response: AgentModelResponse) {
         do {
             let response = try await modelClient.completeChat(
@@ -212,6 +226,12 @@ final class AgentRuntime: @unchecked Sendable {
                 onTextDelta: callbacks?.onAssistantTextDelta,
                 onReasoningDelta: callbacks?.onAssistantReasoningDelta,
                 onToolCallDelta: callbacks?.onAssistantToolCallDelta
+            )
+            observeModelUsage(
+                session: session,
+                environmentPrompt: environmentPrompt,
+                tools: tools,
+                response: response
             )
             SessionHttpLogService.log(
                 sessionId: session.id,
@@ -232,7 +252,10 @@ final class AgentRuntime: @unchecked Sendable {
                 var updated = await runPreCompletionPipeline(
                     session: session,
                     callbacks: callbacks,
-                    options: .forceCompact
+                    options: .forceCompact,
+                    environmentPrompt: environmentPrompt,
+                    tools: tools,
+                    pressureOverride: .overflow
                 )
                 let environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
                     frozen: frozenPrompt,
@@ -258,7 +281,10 @@ final class AgentRuntime: @unchecked Sendable {
                 var updated = await runPreCompletionPipeline(
                     session: session,
                     callbacks: callbacks,
-                    options: .forceCompact
+                    options: .forceCompact,
+                    environmentPrompt: environmentPrompt,
+                    tools: tools,
+                    pressureOverride: .overflow
                 )
                 let environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
                     frozen: frozenPrompt,
@@ -420,15 +446,52 @@ final class AgentRuntime: @unchecked Sendable {
     private func runPreCompletionPipeline(
         session: AgentSession,
         callbacks: AgentTurnCallbacks?,
-        options: PreCompletionOptions
+        options: PreCompletionOptions,
+        environmentPrompt: String,
+        tools: [ToolDefinition],
+        pressureOverride: ContextPressureLevel = .normal
     ) async -> AgentSession {
+        var runtimeContext: CompactionRuntimeContext?
+        if settings.contextCompaction.dynamicCompaction.enabled {
+            let multiplier = tokenEstimatorCalibrator.multiplier(for: session.id)
+            let budget = ContextBudgetCalculator.compute(
+                environmentPrompt: environmentPrompt,
+                tools: tools,
+                messages: session.messages,
+                compactionSettings: settings.contextCompaction,
+                modelSettings: settings.model,
+                calibrationMultiplier: multiplier
+            )
+            runtimeContext = CompactionRuntimeContext(
+                budget: budget,
+                environmentPrompt: environmentPrompt,
+                tools: tools,
+                calibrationMultiplier: multiplier,
+                pressureOverride: pressureOverride
+            )
+        }
+
         let idsBefore = Set(session.messages.map(\.id))
-        let compacted = await preCompletionPipeline.run(session: session, options: options)
+        let compacted = await preCompletionPipeline.run(
+            session: session,
+            options: options,
+            runtimeContext: runtimeContext
+        )
         return await persistCompactionAudits(
             session: compacted,
             messageIdsBefore: idsBefore,
             callbacks: callbacks
         )
+    }
+
+    private func observeModelUsage(
+        session: AgentSession,
+        environmentPrompt: String,
+        tools: [ToolDefinition],
+        response: AgentModelResponse
+    ) {
+        // Usage calibration hook — actual prompt tokens would come from API usage when available.
+        _ = (session, environmentPrompt, tools, response)
     }
 
     private func persistCompactionAudits(

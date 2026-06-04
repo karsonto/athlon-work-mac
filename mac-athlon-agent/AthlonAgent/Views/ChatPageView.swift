@@ -60,10 +60,6 @@ private struct ChatMessagesArea: View {
 
             Spacer()
 
-            if appState.plan != nil {
-                PlanBadge()
-            }
-
             Button("清空上下文") {
                 appState.clearContext()
             }
@@ -135,10 +131,10 @@ private struct ChatMessagesArea: View {
                 .padding(.top, LayoutMetrics.chatScrollPaddingTop)
                 .padding(.bottom, LayoutMetrics.chatScrollPaddingBottom)
             }
-            .onChange(of: appState.activeMessages.count) {
+            .onValueChange(of: appState.activeMessages.count) { _ in
                 scrollToBottom(scrollProxy)
             }
-            .onChange(of: appState.activeMessages.last?.content) {
+            .onValueChange(of: appState.activeMessages.last?.content) { _ in
                 scrollToBottom(scrollProxy)
             }
         }
@@ -200,23 +196,6 @@ private struct ChatComposerArea: View {
         .id("chat-composer")
         .layoutPriority(1)
         .background(colors.chatBackgroundBottom)
-    }
-}
-
-// MARK: - Plan Badge
-struct PlanBadge: View {
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "list.clipboard")
-                .font(.system(size: 9))
-            Text("计划")
-                .font(.system(size: 10))
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .foregroundColor(Color(hex: "#DDD6FE"))
-        .background(Capsule().fill(Color(hex: "#1E1B2E")))
-        .overlay(Capsule().stroke(Color(hex: "#6D28D9"), lineWidth: 1))
     }
 }
 

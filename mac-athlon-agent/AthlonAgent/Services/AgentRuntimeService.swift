@@ -62,7 +62,6 @@ final class AgentRuntimeService: ObservableObject {
     private weak var sessionManager: SessionManager?
     private weak var mcpClientService: McpClientService?
     private weak var executeCommandRegistry: ExecuteCommandProcessRegistry?
-    private weak var planNotebook: PlanNotebook?
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -73,15 +72,13 @@ final class AgentRuntimeService: ObservableObject {
         skillService: SkillService,
         sessionManager: SessionManager,
         mcpClientService: McpClientService,
-        executeCommandRegistry: ExecuteCommandProcessRegistry,
-        planNotebook: PlanNotebook
+        executeCommandRegistry: ExecuteCommandProcessRegistry
     ) {
         self.workspaceService = workspaceService
         self.skillService = skillService
         self.sessionManager = sessionManager
         self.mcpClientService = mcpClientService
         self.executeCommandRegistry = executeCommandRegistry
-        self.planNotebook = planNotebook
     }
 
     func reconfigure(settings: AppSettings) {
@@ -124,7 +121,6 @@ final class AgentRuntimeService: ObservableObject {
         currentReasoning = ""
         currentToolCalls = []
 
-        let sessionContext = DefaultAgentSessionContext(sessionId: session.id)
         let sessionWorkspace = session.activeWorkspace?.trimmingCharacters(in: .whitespacesAndNewlines)
         let effectiveSessionWorkspace = (sessionWorkspace?.isEmpty == false)
             ? sessionWorkspace
@@ -133,12 +129,10 @@ final class AgentRuntimeService: ObservableObject {
             workspaceService: workspaceService,
             settings: settings,
             skillService: skillService,
-            sessionContext: sessionContext,
             sessionManager: sessionManager,
             mcpRegistry: mcpClientService!.registryProvider,
             sessionWorkspacePath: effectiveSessionWorkspace,
-            executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook
+            executeCommandRegistry: executeCommandRegistry
         )
 
         let agentRuntime = runtime ?? AgentRuntime.makeDefault(

@@ -65,9 +65,7 @@ class SessionManager: ObservableObject {
             isRunning: false,
             queuedTurnCount: 0,
             activeWorkspace: workspace,
-            workspaceName: workspaceName,
-            plan: nil,
-            interactionMode: .agent
+            workspaceName: workspaceName
         )
         sessions.insert(session, at: 0)
         deactivateOtherSessions(except: session.id)
@@ -138,13 +136,6 @@ class SessionManager: ObservableObject {
             updateSession(sessionId, update: apply)
         } else {
             updateSessionInMemory(sessionId, update: apply)
-        }
-    }
-
-    // MARK: - Update Plan
-    func updatePlan(_ plan: AgentPlan?, for sessionId: String) {
-        updateSession(sessionId) { session in
-            session.plan = plan
         }
     }
 

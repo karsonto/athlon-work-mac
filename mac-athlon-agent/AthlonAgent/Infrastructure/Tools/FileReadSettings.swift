@@ -9,16 +9,6 @@ struct FileReadSettings: Codable, Sendable {
     var countTotalLines: Bool = true
 }
 
-struct PlanSettings: Codable, Sendable {
-    var maxSubtasks: Int = 20
-    var planFileName: String = "plan.md"
-    var autoContinueEnabled: Bool = true
-    var maxAutoContinueRounds: Int = 20
-    var minOverviewChars: Int = 200
-    var minSubtaskDescriptionChars: Int = 40
-    var minSubtaskExpectedOutcomeChars: Int = 20
-}
-
 struct ToolPermissionSettings: Codable, Sendable {
     var askBeforeEveryCommand: Bool = true
     var fileScopePolicy: String = "AskOutsideWorkspace"

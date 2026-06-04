@@ -6,12 +6,10 @@ enum BuiltInTools {
         workspaceService: WorkspaceService,
         settings: AppSettings,
         skillService: SkillService,
-        sessionContext: AgentSessionContext,
         sessionManager: SessionManager? = nil,
         mcpRegistry: McpRegistryProviding,
         sessionWorkspacePath: String? = nil,
-        executeCommandRegistry: ExecuteCommandProcessRegistry? = nil,
-        planNotebook sharedPlanNotebook: PlanNotebook? = nil
+        executeCommandRegistry: ExecuteCommandProcessRegistry? = nil
     ) -> CompositeToolRouter {
         let guard_ = WorkspaceGuard(workspaceService: workspaceService, settings: settings)
         if let sessionWorkspacePath {
@@ -20,11 +18,6 @@ enum BuiltInTools {
                 guard_.sessionRootPath = trimmed
             }
         }
-        let planNotebook = sharedPlanNotebook ?? PlanNotebook(
-            settings: settings.plan,
-            workspaceGuard: guard_,
-            sessionManager: sessionManager
-        )
         let skillLoader = SkillResourceLoader(skillService: skillService)
 
         let tools: [any AgentTool] = [
@@ -39,10 +32,7 @@ enum BuiltInTools {
                 workspaceGuard: guard_,
                 processRegistry: executeCommandRegistry
             ),
-            LoadSkillThroughPathTool(loader: skillLoader),
-            CreatePlanTool(planNotebook: planNotebook, sessionContext: sessionContext),
-            GetPlanTool(planNotebook: planNotebook, sessionContext: sessionContext),
-            FinishSubtaskTool(planNotebook: planNotebook, sessionContext: sessionContext)
+            LoadSkillThroughPathTool(loader: skillLoader)
         ]
 
         return CompositeToolRouter(localTools: tools, mcpRegistry: mcpRegistry)
@@ -52,21 +42,11 @@ enum BuiltInTools {
         [
             "file_list", "file_read", "file_write", "file_edit",
             "grep_files", "glob_files", "execute_command",
-            "load_skill_through_path",
-            "create_plan", "get_plan", "finish_subtask"
+            "load_skill_through_path"
         ]
     }
 
     static func isBuiltIn(_ toolName: String) -> Bool {
         toolNames().contains { $0.caseInsensitiveCompare(toolName) == .orderedSame }
-    }
-}
-
-/// Simple session context adapter for tool routing.
-final class DefaultAgentSessionContext: AgentSessionContext {
-    var sessionId: String?
-
-    init(sessionId: String? = nil) {
-        self.sessionId = sessionId
     }
 }
