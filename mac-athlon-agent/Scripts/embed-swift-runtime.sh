@@ -2,6 +2,19 @@
 # Copy Swift runtime dylibs into an app bundle for deployment on older macOS versions.
 set -euo pipefail
 
+collect_swift_lib_names() {
+  local executable="$1"
+  {
+    otool -L "${executable}" 2>/dev/null || true
+    for arch in x86_64 arm64; do
+      otool -arch "${arch}" -L "${executable}" 2>/dev/null || true
+    done
+  } | awk '/\/usr\/lib\/swift\// {print $1}' | while IFS= read -r lib; do
+    [[ -n "${lib}" ]] || continue
+    basename "${lib}"
+  done | sort -u
+}
+
 embed_swift_runtime() {
   local app_bundle="$1"
   local executable="${app_bundle}/Contents/MacOS/AthlonAgent"
@@ -25,31 +38,27 @@ embed_swift_runtime() {
 
   install_name_tool -add_rpath "@executable_path/../Frameworks" "${executable}" 2>/dev/null || true
 
-  local -a libs_to_copy=()
-  while IFS= read -r lib; do
-    [[ -n "${lib}" ]] || continue
-    local base
-    base="$(basename "${lib}")"
-    if [[ -f "${swift_lib_dir}/${base}" ]]; then
-      libs_to_copy+=("${base}")
-    elif [[ -f "${swift_compat_dir}/${base}" ]]; then
-      cp "${swift_compat_dir}/${base}" "${frameworks}/${base}"
-      install_name_tool -change "${lib}" "@rpath/${base}" "${executable}" 2>/dev/null || true
-    fi
-  done < <(otool -L "${executable}" | awk '/\/usr\/lib\/swift\// {print $1}')
-
   local base
-  for base in "${libs_to_copy[@]}"; do
-    if [[ ! -f "${frameworks}/${base}" ]]; then
-      cp "${swift_lib_dir}/${base}" "${frameworks}/${base}"
-      install_name_tool -id "@rpath/${base}" "${frameworks}/${base}"
+  while IFS= read -r base; do
+    [[ -n "${base}" ]] || continue
+    if [[ -f "${swift_lib_dir}/${base}" ]]; then
+      if [[ ! -f "${frameworks}/${base}" ]]; then
+        cp "${swift_lib_dir}/${base}" "${frameworks}/${base}"
+        install_name_tool -id "@rpath/${base}" "${frameworks}/${base}"
+      fi
+      install_name_tool -change "/usr/lib/swift/${base}" "@rpath/${base}" "${executable}" 2>/dev/null || true
+    elif [[ -f "${swift_compat_dir}/${base}" ]]; then
+      if [[ ! -f "${frameworks}/${base}" ]]; then
+        cp "${swift_compat_dir}/${base}" "${frameworks}/${base}"
+        install_name_tool -id "@rpath/${base}" "${frameworks}/${base}"
+      fi
+      install_name_tool -change "/usr/lib/swift/${base}" "@rpath/${base}" "${executable}" 2>/dev/null || true
     fi
-    install_name_tool -change "/usr/lib/swift/${base}" "@rpath/${base}" "${executable}" 2>/dev/null || true
-  done
+  done < <(collect_swift_lib_names "${executable}")
 
-  local dylib lib base
+  shopt -s nullglob
+  local dylib lib
   for dylib in "${frameworks}"/*.dylib; do
-    [[ -f "${dylib}" ]] || continue
     install_name_tool -id "@rpath/$(basename "${dylib}")" "${dylib}" 2>/dev/null || true
     while IFS= read -r lib; do
       [[ -n "${lib}" ]] || continue
@@ -57,8 +66,9 @@ embed_swift_runtime() {
       if [[ -f "${frameworks}/${base}" ]]; then
         install_name_tool -change "${lib}" "@rpath/${base}" "${dylib}" 2>/dev/null || true
       fi
-    done < <(otool -L "${dylib}" | awk '/\/usr\/lib\/swift\// {print $1}')
+    done < <(otool -L "${dylib}" 2>/dev/null | awk '/\/usr\/lib\/swift\// {print $1}')
   done
+  shopt -u nullglob
 
   if [[ -f "${swift_compat_dir}/libswiftCompatibilitySpan.dylib" \
         && ! -f "${frameworks}/libswiftCompatibilitySpan.dylib" ]]; then
@@ -69,6 +79,11 @@ embed_swift_runtime() {
 
   local count
   count="$(find "${frameworks}" -name '*.dylib' | wc -l | tr -d ' ')"
+  if [[ "${count}" -eq 0 ]]; then
+    echo "error: no Swift runtime libraries embedded into ${frameworks}" >&2
+    return 1
+  fi
+
   echo "Embedded ${count} Swift runtime libraries into ${frameworks}"
 }
 
