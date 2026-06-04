@@ -13,7 +13,9 @@ fi
 # Avoid stale Xcode-integrated build state from multi-arch swift build.
 rm -rf "${ROOT}/.build/apple"
 
-TOOLCHAIN="$(xcrun --show-toolchain-path)"
+# shellcheck source=resolve-toolchain.sh
+source "${ROOT}/Scripts/resolve-toolchain.sh"
+TOOLCHAIN="$(resolve_toolchain)"
 COMPAT_LIB="${TOOLCHAIN}/usr/lib/swift/macosx"
 SWIFT_LINK_FLAGS=(
   -Xlinker -L -Xlinker "${COMPAT_LIB}"

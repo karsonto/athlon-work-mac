@@ -2,31 +2,9 @@
 # Copy Swift runtime dylibs into an app bundle for deployment on older macOS versions.
 set -euo pipefail
 
-resolve_toolchain() {
-  local toolchain="" swift_bin=""
-
-  for candidate in \
-    "$(xcrun --show-toolchain-path 2>/dev/null || true)" \
-    "$(xcrun --toolchain default --show-toolchain-path 2>/dev/null || true)" \
-    "$(xcrun --toolchain swift --show-toolchain-path 2>/dev/null || true)"; do
-    if [[ -n "${candidate}" && -d "${candidate}" ]]; then
-      printf '%s' "${candidate}"
-      return 0
-    fi
-  done
-
-  swift_bin="$(xcrun --find swift 2>/dev/null || true)"
-  if [[ -n "${swift_bin}" ]]; then
-    toolchain="${swift_bin%/usr/bin/swift}"
-    if [[ -d "${toolchain}" ]]; then
-      printf '%s' "${toolchain}"
-      return 0
-    fi
-  fi
-
-  echo "error: unable to locate Xcode Swift toolchain" >&2
-  return 1
-}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=resolve-toolchain.sh
+source "${SCRIPT_DIR}/resolve-toolchain.sh"
 
 find_swift_library_source() {
   local base="$1"
