@@ -23,6 +23,7 @@ SWIFT_LINK_FLAGS=(
   -Xlinker -lswiftCompatibilityConcurrency
   -Xlinker -lswiftCompatibilityPacks
   -Xlinker -lswiftCompatibilityDynamicReplacements
+  -Xlinker -platform_version -Xlinker macos -Xlinker 12.0 -Xlinker 12.0
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks
   -Xlinker -headerpad_max_install_names
 )

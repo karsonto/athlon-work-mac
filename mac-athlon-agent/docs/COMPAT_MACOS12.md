@@ -46,6 +46,17 @@ cd mac-athlon-agent
 
 > **注意：** 早期 CI 产物仅为 arm64，无法在 Intel Mac（如 2016 款 MacBook Pro）上运行。请重新下载包含 `x86_64 arm64` 的最新构建。
 
+### Intel Mac（macOS 12）启动即崩溃
+
+若崩溃报告为 `DYLD` / `Library missing` / `libswiftCore.dylib`，且 `Reason: tried: ''`：
+
+1. **应用包名不能含空格。** 请使用 `AthlonAgent.app`（不是 `Athlon Agent.app`）。可手动重命名：
+   ```bash
+   mv "/Applications/Athlon Agent.app" /Applications/AthlonAgent.app
+   ```
+2. 确认存在嵌入运行时：`ls "/Applications/AthlonAgent.app/Contents/Frameworks/libswiftCore.dylib"`
+3. 下载 **最新** CI Artifact（`compat/macos-12` 分支），DMG 内应为 `AthlonAgent.app`。
+
 ## 限制与风险
 
 - 补丁作用于 `.build/checkouts`，**不会被 git 跟踪**；CI 或新机器上必须先 resolve 再 patch。

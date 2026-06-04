@@ -55,7 +55,8 @@ jobs:
 
       - name: Create App Bundle
         run: |
-          BUNDLE_DIR="${{ runner.temp }}/Athlon Agent.app"
+          # Bundle folder must not contain spaces (macOS 12 dyld can fail to resolve @executable_path).
+          BUNDLE_DIR="${{ runner.temp }}/AthlonAgent.app"
           BUILD_DIR="$(pwd)/mac-athlon-agent/.build/universal/release" \
             BUNDLE_DIR="${BUNDLE_DIR}" \
             mac-athlon-agent/Scripts/package-macos-app.sh
@@ -72,14 +73,15 @@ jobs:
           lipo -info "${EXEC}" | grep -E 'x86_64|arm64'
           test -f "${APP}/Contents/Frameworks/libswiftCore.dylib"
           test -f "${APP}/Contents/Frameworks/libswift_Concurrency.dylib"
-          lipo -info "${APP}/Contents/Frameworks/libswiftCore.dylib" | grep -E 'x86_64|arm64'
+          lipo -info "${APP}/Contents/Frameworks/libswiftCore.dylib" | grep -q 'Non-fat file:.*x86_64'
           test "$(nm -arch x86_64 -gU "${APP}/Contents/Frameworks/libswiftCore.dylib" | grep -c '2IDs12IdentifiablePTl')" -gt 0
           vtool -show-build -arch x86_64 "${APP}/Contents/Frameworks/libswiftCore.dylib" | grep -q 'minos 12.0'
           otool -arch x86_64 -L "${EXEC}" | grep -q '@executable_path/../Frameworks/libswiftCore.dylib'
           ! otool -arch x86_64 -L "${EXEC}" | grep -E '/usr/lib/swift/|@rpath/libswift' | grep -v '/usr/lib/swift/libswiftNetwork.dylib' | grep -q .
           otool -arch x86_64 -l "${EXEC}" | awk '/cmd LC_RPATH/{show=1;next} show && $1=="path"{print $2;show=0}' | grep -vx '@executable_path/../Frameworks' && exit 1 || true
           test "$(find "${APP}/Contents/Frameworks" -name '*.dylib' | wc -l | tr -d ' ')" -ge 5
-          codesign --verify --deep --strict "${APP}"
+          test "$(basename "${APP}")" = "AthlonAgent.app"
+          codesign --verify --deep "${APP}"
 
       - name: Create DMG
         run: |

@@ -15,6 +15,12 @@ EXTRACT_ARM="${EXTRACT_DIR}/arm64e/usr/lib/swift"
 EXEC_FRAMEWORKS_PATH='@executable_path/../Frameworks'
 DYLIB_FRAMEWORKS_PATH='@loader_path'
 KEEP_RPATH="${EXEC_FRAMEWORKS_PATH}"
+# Always refreshed from extract/toolchain (stale copies break macOS 12).
+FORCE_REFRESH_LIBS=(
+  libswiftCore.dylib
+  libswift_Concurrency.dylib
+  libswiftCompatibilitySpan.dylib
+)
 
 collect_swift_lib_names() {
   local binary="$1"
@@ -146,28 +152,41 @@ find_swift_library_source() {
   return 1
 }
 
+materialize_x86_64_swift_lib() {
+  local source="$1"
+  local dest="$2"
+
+  if [[ ! -f "${source}" ]]; then
+    return 1
+  fi
+
+  if lipo -info "${source}" 2>/dev/null | grep -q 'Non-fat'; then
+    cp "${source}" "${dest}"
+  else
+    lipo -extract x86_64 "${source}" -output "${dest}"
+  fi
+  install_name_tool -id "$(embedded_frameworks_path "$(basename "${dest}")" 1)" "${dest}" 2>/dev/null || true
+}
+
 merge_swift_library_into_frameworks() {
   local base="$1"
   local frameworks="$2"
   local x86="${EXTRACT_X86}/${base}"
-  local arm="${EXTRACT_ARM}/${base}"
   local dest="${frameworks}/${base}"
 
-  if [[ -f "${x86}" && -f "${arm}" ]]; then
-    lipo -create -output "${dest}" "${x86}" "${arm}"
-    install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${dest}" 2>/dev/null || true
-    return 0
-  fi
   if [[ -f "${x86}" ]]; then
-    cp "${x86}" "${dest}"
-    install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${dest}" 2>/dev/null || true
+    materialize_x86_64_swift_lib "${x86}" "${dest}"
     return 0
   fi
-  if [[ -f "${arm}" ]]; then
-    cp "${arm}" "${dest}"
-    install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${dest}" 2>/dev/null || true
-    return 0
-  fi
+  return 1
+}
+
+should_force_refresh_lib() {
+  local base="$1"
+  local lib
+  for lib in "${FORCE_REFRESH_LIBS[@]}"; do
+    [[ "${base}" == "${lib}" ]] && return 0
+  done
   return 1
 }
 
@@ -177,16 +196,17 @@ copy_library_if_missing() {
   local base
   base="$(basename "${source}")"
 
-  if [[ -f "${frameworks}/${base}" ]]; then
+  if [[ -f "${frameworks}/${base}" ]] && ! should_force_refresh_lib "${base}"; then
     return 0
   fi
+
+  rm -f "${frameworks}/${base}"
 
   if merge_swift_library_into_frameworks "${base}" "${frameworks}"; then
     return 0
   fi
 
-  cp "${source}" "${frameworks}/${base}"
-  install_name_tool -id "$(embedded_frameworks_path "${base}" 1)" "${frameworks}/${base}" 2>/dev/null || true
+  materialize_x86_64_swift_lib "${source}" "${frameworks}/${base}"
 }
 
 ensure_swift_runtime_extract() {
@@ -203,15 +223,18 @@ ensure_swift_runtime_extract() {
 dylib_contains_arch() {
   local dylib="$1"
   local arch="$2"
-  lipo -info "${dylib}" 2>/dev/null \
-    | sed -n 's/.*are: //p' \
-    | tr ' ' '\n' \
-    | grep -qx "${arch}"
+  lipo -info "${dylib}" 2>/dev/null | grep -qE "(are: .*\b${arch}\b|is architecture: ${arch}\b)"
 }
 
 patch_embedded_dylib_deployment_target() {
   local dylib="$1"
   local arch work="${dylib}.vtool-work"
+
+  if otool -arch x86_64 -l "${dylib}" 2>/dev/null | grep -q 'LC_VERSION_MIN_MACOSX' \
+    && ! otool -arch x86_64 -l "${dylib}" 2>/dev/null | grep -q 'LC_BUILD_VERSION'; then
+    echo "error: refusing to patch legacy LC_VERSION_MIN-only dylib $(basename "${dylib}")" >&2
+    return 1
+  fi
 
   cp "${dylib}" "${work}"
   for arch in x86_64 arm64 arm64e; do
@@ -233,6 +256,17 @@ patch_embedded_dylibs_deployment_target() {
   shopt -u nullglob
 }
 
+sign_embedded_dylibs() {
+  local frameworks="$1"
+  local dylib
+
+  shopt -s nullglob
+  for dylib in "${frameworks}"/*.dylib; do
+    codesign --force --sign - --no-strict "${dylib}" 2>/dev/null || true
+  done
+  shopt -u nullglob
+}
+
 verify_embedded_swift_core() {
   local frameworks="$1"
   local core="${frameworks}/libswiftCore.dylib"
@@ -242,14 +276,21 @@ verify_embedded_swift_core() {
     return 1
   fi
 
-  if ! lipo -info "${core}" 2>/dev/null | grep -q 'x86_64'; then
-    echo "error: embedded libswiftCore.dylib is missing x86_64 slice (Intel Macs will crash)" >&2
+  if ! lipo -info "${core}" 2>/dev/null | grep -q 'Non-fat file:.*x86_64'; then
+    echo "error: embedded libswiftCore.dylib must be a thin x86_64 library for Intel macOS 12" >&2
+    lipo -info "${core}" >&2 || true
     return 1
   fi
 
-  if ! vtool -show-build -arch x86_64 "${core}" 2>/dev/null | grep -q 'minos 12.0'; then
+  if vtool -show-build -arch x86_64 "${core}" 2>/dev/null | grep -q 'minos 12.0'; then
+    :
+  elif otool -arch x86_64 -l "${core}" 2>/dev/null | grep -q 'LC_VERSION_MIN_MACOSX'; then
+    echo "error: embedded libswiftCore.dylib is the legacy swift-5.0 copy (LC_VERSION_MIN only)" >&2
+    echo "hint: remove Contents/Frameworks and re-run embed; ensure dyld cache extract succeeded" >&2
+    return 1
+  else
     echo "error: embedded libswiftCore.dylib x86_64 slice is not tagged for macOS 12" >&2
-    vtool -show-build -arch x86_64 "${core}" 2>/dev/null | grep minos >&2 || true
+    vtool -show-build -arch x86_64 "${core}" 2>/dev/null | grep -E 'minos|LC_VERSION' >&2 || true
     return 1
   fi
 
@@ -341,6 +382,7 @@ embed_swift_runtime() {
   fi
 
   patch_embedded_dylibs_deployment_target "${frameworks}"
+  sign_embedded_dylibs "${frameworks}"
   verify_embedded_swift_core "${frameworks}"
 
   local count

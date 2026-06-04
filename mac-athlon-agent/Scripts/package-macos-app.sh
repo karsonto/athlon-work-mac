@@ -3,7 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="${APP_NAME:-Athlon Agent}"
+# Bundle folder name must not contain spaces (macOS 12 dyld is fragile with spaced paths).
+APP_NAME="${APP_NAME:-AthlonAgent}"
+DISPLAY_NAME="${DISPLAY_NAME:-Athlon Agent}"
 BUNDLE_DIR="${BUNDLE_DIR:-$ROOT/dist/${APP_NAME}.app}"
 EXEC_NAME="AthlonAgent"
 
@@ -53,8 +55,8 @@ chmod +x "${BUNDLE_DIR}/Contents/MacOS/${EXEC_NAME}"
 cp "${ROOT}/AthlonAgent/Info.plist" "${BUNDLE_DIR}/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${EXEC_NAME}" "${BUNDLE_DIR}/Contents/Info.plist" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string ${EXEC_NAME}" "${BUNDLE_DIR}/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "${BUNDLE_DIR}/Contents/Info.plist" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${APP_NAME}" "${BUNDLE_DIR}/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName ${DISPLAY_NAME}" "${BUNDLE_DIR}/Contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${DISPLAY_NAME}" "${BUNDLE_DIR}/Contents/Info.plist"
 
 cp -R "${RESOURCE_BUNDLE}" "${BUNDLE_DIR}/Contents/Resources/"
 
