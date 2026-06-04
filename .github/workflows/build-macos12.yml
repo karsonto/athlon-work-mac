@@ -43,21 +43,21 @@ jobs:
           mac-athlon-agent/Scripts/patch-dependencies-macos12.sh
           test -d mac-athlon-agent/.build/checkouts/swift-sdk/Sources/MCP
 
-      - name: Build Release Binary
+      - name: Build Release Binary (Universal)
         run: |
-          cd mac-athlon-agent
-          swift build -c release --product AthlonAgent
+          chmod +x mac-athlon-agent/Scripts/build-release-macos12.sh
+          mac-athlon-agent/Scripts/build-release-macos12.sh
 
       - name: Run Tests
         run: |
           cd mac-athlon-agent
-          swift test
+          swift test --arch arm64
 
       - name: Create App Bundle
         run: |
           chmod +x mac-athlon-agent/Scripts/package-macos-app.sh
           BUNDLE_DIR="${{ runner.temp }}/Athlon Agent.app"
-          BUILD_DIR="$(pwd)/mac-athlon-agent/.build/release" \
+          BUILD_DIR="$(pwd)/mac-athlon-agent/.build/apple/Products/Release" \
             BUNDLE_DIR="${BUNDLE_DIR}" \
             mac-athlon-agent/Scripts/package-macos-app.sh
           echo "APP_BUNDLE=${BUNDLE_DIR}" >> $GITHUB_ENV
@@ -65,10 +65,14 @@ jobs:
       - name: Verify App Bundle
         run: |
           APP="${{ env.APP_BUNDLE }}"
-          test -x "${APP}/Contents/MacOS/AthlonAgent"
+          EXEC="${APP}/Contents/MacOS/AthlonAgent"
+          test -x "${EXEC}"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${APP}/Contents/Info.plist")" = "AthlonAgent"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "${APP}/Contents/Info.plist")" = "12.0"
           test -d "${APP}/Contents/Resources/AthlonAgent_AthlonAgent.bundle"
+          lipo -info "${EXEC}" | grep -E 'x86_64|arm64'
+          test -f "${APP}/Contents/Frameworks/libswiftCore.dylib"
+          test "$(find "${APP}/Contents/Frameworks" -name '*.dylib' | wc -l | tr -d ' ')" -ge 10
           codesign --verify --deep --strict "${APP}"
 
       - name: Create DMG

@@ -3,14 +3,36 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-$ROOT/.build/release}"
 APP_NAME="${APP_NAME:-Athlon Agent}"
 BUNDLE_DIR="${BUNDLE_DIR:-$ROOT/dist/${APP_NAME}.app}"
 EXEC_NAME="AthlonAgent"
+
+resolve_build_dir() {
+  if [[ -n "${BUILD_DIR:-}" ]]; then
+    printf '%s' "${BUILD_DIR}"
+    return
+  fi
+  local universal="${ROOT}/.build/apple/Products/Release"
+  local legacy="${ROOT}/.build/release"
+  if [[ -f "${universal}/${EXEC_NAME}" ]]; then
+    printf '%s' "${universal}"
+  else
+    printf '%s' "${legacy}"
+  fi
+}
+
+embed_swift_stdlib() {
+  local app="$1"
+  chmod +x "${ROOT}/Scripts/embed-swift-runtime.sh"
+  "${ROOT}/Scripts/embed-swift-runtime.sh" "${app}"
+}
+
+BUILD_DIR="$(resolve_build_dir)"
 RESOURCE_BUNDLE="${BUILD_DIR}/${EXEC_NAME}_${EXEC_NAME}.bundle"
 
 if [[ ! -f "${BUILD_DIR}/${EXEC_NAME}" ]]; then
-  echo "error: missing ${BUILD_DIR}/${EXEC_NAME} — run: swift build -c release --product AthlonAgent" >&2
+  echo "error: missing ${BUILD_DIR}/${EXEC_NAME}" >&2
+  echo "hint: run Scripts/build-release-macos12.sh for Intel + Apple Silicon builds" >&2
   exit 1
 fi
 
@@ -35,7 +57,9 @@ cp -R "${RESOURCE_BUNDLE}" "${BUNDLE_DIR}/Contents/Resources/"
 
 printf 'APPL????' > "${BUNDLE_DIR}/Contents/PkgInfo"
 
+embed_swift_stdlib "${BUNDLE_DIR}"
 codesign --force --deep --sign - "${BUNDLE_DIR}"
 
 echo "Packaged: ${BUNDLE_DIR}"
-plutil -p "${BUNDLE_DIR}/Contents/Info.plist" | grep -E 'CFBundleExecutable|CFBundleName'
+echo "Binary: $(lipo -info "${BUNDLE_DIR}/Contents/MacOS/${EXEC_NAME}")"
+plutil -p "${BUNDLE_DIR}/Contents/Info.plist" | grep -E 'CFBundleExecutable|CFBundleName|LSMinimumSystemVersion'
