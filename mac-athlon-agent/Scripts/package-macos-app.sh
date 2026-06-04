@@ -61,7 +61,8 @@ cp -R "${RESOURCE_BUNDLE}" "${BUNDLE_DIR}/Contents/Resources/"
 printf 'APPL????' > "${BUNDLE_DIR}/Contents/PkgInfo"
 
 embed_swift_stdlib "${BUNDLE_DIR}"
-codesign --force --deep --sign - "${BUNDLE_DIR}"
+# Extracted dyld-cache Swift libraries need --no-strict for ad-hoc signing.
+codesign --force --deep --sign - --no-strict "${BUNDLE_DIR}"
 
 echo "Packaged: ${BUNDLE_DIR}"
 echo "Binary: $(lipo -info "${BUNDLE_DIR}/Contents/MacOS/${EXEC_NAME}")"

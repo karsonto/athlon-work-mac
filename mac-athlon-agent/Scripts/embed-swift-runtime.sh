@@ -3,10 +3,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=resolve-toolchain.sh
 source "${SCRIPT_DIR}/resolve-toolchain.sh"
 
 HOST_SWIFT_DIR="/usr/lib/swift"
+EXTRACT_DIR="${SWIFT_RUNTIME_EXTRACT_DIR:-${ROOT}/.build/swift-runtime-extract}"
+EXTRACT_X86="${EXTRACT_DIR}/x86_64/usr/lib/swift"
+EXTRACT_ARM="${EXTRACT_DIR}/arm64e/usr/lib/swift"
 
 collect_swift_lib_names() {
   local binary="$1"
@@ -44,6 +48,12 @@ resolve_swift_search_dirs() {
   local toolchain="$1"
   local dir
 
+  if [[ -d "${EXTRACT_X86}" ]]; then
+    printf '%s\n' "${EXTRACT_X86}"
+  fi
+  if [[ -d "${EXTRACT_ARM}" ]]; then
+    printf '%s\n' "${EXTRACT_ARM}"
+  fi
   if [[ -f "${HOST_SWIFT_DIR}/libswiftCore.dylib" ]]; then
     printf '%s\n' "${HOST_SWIFT_DIR}"
   fi
@@ -55,6 +65,7 @@ resolve_swift_search_dirs() {
     "${toolchain}/usr/lib/swift/macosx" \
     "${toolchain}"/usr/lib/swift-*/macosx; do
     [[ -d "${dir}" ]] || continue
+    [[ "${dir}" == *swift-5.0* ]] && continue
     printf '%s\n' "${dir}"
   done
   shopt -u nullglob
@@ -77,16 +88,58 @@ find_swift_library_source() {
   return 1
 }
 
+merge_swift_library_into_frameworks() {
+  local base="$1"
+  local frameworks="$2"
+  local x86="${EXTRACT_X86}/${base}"
+  local arm="${EXTRACT_ARM}/${base}"
+  local dest="${frameworks}/${base}"
+
+  if [[ -f "${x86}" && -f "${arm}" ]]; then
+    lipo -create -output "${dest}" "${x86}" "${arm}"
+    install_name_tool -id "@rpath/${base}" "${dest}" 2>/dev/null || true
+    return 0
+  fi
+  if [[ -f "${x86}" ]]; then
+    cp "${x86}" "${dest}"
+    install_name_tool -id "@rpath/${base}" "${dest}" 2>/dev/null || true
+    return 0
+  fi
+  if [[ -f "${arm}" ]]; then
+    cp "${arm}" "${dest}"
+    install_name_tool -id "@rpath/${base}" "${dest}" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
 copy_library_if_missing() {
   local source="$1"
   local frameworks="$2"
   local base
   base="$(basename "${source}")"
 
-  if [[ ! -f "${frameworks}/${base}" ]]; then
-    cp "${source}" "${frameworks}/${base}"
-    install_name_tool -id "@rpath/${base}" "${frameworks}/${base}" 2>/dev/null || true
+  if [[ -f "${frameworks}/${base}" ]]; then
+    return 0
   fi
+
+  if merge_swift_library_into_frameworks "${base}" "${frameworks}"; then
+    return 0
+  fi
+
+  cp "${source}" "${frameworks}/${base}"
+  install_name_tool -id "@rpath/${base}" "${frameworks}/${base}" 2>/dev/null || true
+}
+
+ensure_swift_runtime_extract() {
+  if [[ -f "${EXTRACT_X86}/libswiftCore.dylib" ]]; then
+    return 0
+  fi
+  if [[ -f "${HOST_SWIFT_DIR}/libswiftCore.dylib" ]]; then
+    return 0
+  fi
+  chmod +x "${SCRIPT_DIR}/extract-host-swift-runtime.sh"
+  "${SCRIPT_DIR}/extract-host-swift-runtime.sh" "${EXTRACT_DIR}"
 }
 
 verify_embedded_swift_core() {
@@ -103,9 +156,11 @@ verify_embedded_swift_core() {
     return 1
   fi
 
-  if ! nm -arch x86_64 -gU "${core}" 2>/dev/null | grep -q '_\$s2IDs12IdentifiablePTl'; then
+  local symbol_count
+  symbol_count="$(nm -arch x86_64 -gU "${core}" 2>/dev/null | grep -c '2IDs12IdentifiablePTl' || true)"
+  if [[ "${symbol_count}" -eq 0 ]]; then
     echo "error: embedded libswiftCore.dylib is too old for this Swift 6 build" >&2
-    echo "hint: copy libswiftCore from ${HOST_SWIFT_DIR} on the CI/build host, not swift-5.0/macosx" >&2
+    echo "hint: extract from dyld shared cache; do not use swift-5.0 toolchain copies" >&2
     return 1
   fi
 }
@@ -121,30 +176,16 @@ embed_swift_runtime() {
     return 1
   fi
 
-  if [[ ! -f "${HOST_SWIFT_DIR}/libswiftCore.dylib" ]]; then
-    echo "error: host Swift runtime not found at ${HOST_SWIFT_DIR}/libswiftCore.dylib" >&2
-    echo "hint: package on macOS 13+ with Xcode 16+ (CI uses macos-15); do not use swift-5.0 toolchain copies" >&2
-    return 1
-  fi
+  ensure_swift_runtime_extract
 
   toolchain="$(resolve_toolchain)"
   mkdir -p "${frameworks}"
 
   install_name_tool -add_rpath "@executable_path/../Frameworks" "${executable}" 2>/dev/null || true
 
-  # Seed libswiftCore from the host OS Swift 6 runtime first. Toolchain swift-5.0
-  # copies are Swift 5 back-deploy stubs and will crash on launch (missing symbols).
-  copy_library_if_missing "${HOST_SWIFT_DIR}/libswiftCore.dylib" "${frameworks}"
-
   while IFS= read -r base; do
     [[ -n "${base}" ]] || continue
-    if [[ "${base}" == "libswiftCore.dylib" ]]; then
-      continue
-    fi
     source="$(find_swift_library_source "${base}" "${toolchain}" || true)"
-    if [[ -z "${source}" && -f "${HOST_SWIFT_DIR}/${base}" ]]; then
-      source="${HOST_SWIFT_DIR}/${base}"
-    fi
     [[ -n "${source}" ]] || continue
     copy_library_if_missing "${source}" "${frameworks}"
   done < <(collect_swift_lib_names "${executable}")
@@ -152,9 +193,6 @@ embed_swift_runtime() {
   for required in libswiftCore.dylib libswift_Concurrency.dylib; do
     if [[ ! -f "${frameworks}/${required}" ]]; then
       source="$(find_swift_library_source "${required}" "${toolchain}" || true)"
-      if [[ -z "${source}" && -f "${HOST_SWIFT_DIR}/${required}" ]]; then
-        source="${HOST_SWIFT_DIR}/${required}"
-      fi
       if [[ -n "${source}" ]]; then
         copy_library_if_missing "${source}" "${frameworks}"
       fi

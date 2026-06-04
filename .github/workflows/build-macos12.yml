@@ -34,7 +34,7 @@ jobs:
       - name: Resolve and patch dependencies
         run: |
           cd mac-athlon-agent
-          chmod +x Scripts/patch-dependencies-macos12.sh Scripts/build-release-macos12.sh Scripts/package-macos-app.sh Scripts/embed-swift-runtime.sh
+          chmod +x Scripts/patch-dependencies-macos12.sh Scripts/build-release-macos12.sh Scripts/package-macos-app.sh Scripts/embed-swift-runtime.sh Scripts/extract-host-swift-runtime.sh
           swift --version
           swift package resolve
           ./Scripts/patch-dependencies-macos12.sh
@@ -49,6 +49,9 @@ jobs:
         run: |
           cd mac-athlon-agent
           SKIP_RESOLVE=1 ./Scripts/build-release-macos12.sh
+
+      - name: Install dyld cache extractor
+        run: brew install keith/formulae/dyld-shared-cache-extractor
 
       - name: Create App Bundle
         run: |
@@ -70,7 +73,7 @@ jobs:
           test -f "${APP}/Contents/Frameworks/libswiftCore.dylib"
           test -f "${APP}/Contents/Frameworks/libswift_Concurrency.dylib"
           lipo -info "${APP}/Contents/Frameworks/libswiftCore.dylib" | grep -E 'x86_64|arm64'
-          nm -arch x86_64 -gU "${APP}/Contents/Frameworks/libswiftCore.dylib" | grep -q '_\$s2IDs12IdentifiablePTl'
+          test "$(nm -arch x86_64 -gU "${APP}/Contents/Frameworks/libswiftCore.dylib" | grep -c '2IDs12IdentifiablePTl')" -gt 0
           ! otool -arch x86_64 -L "${EXEC}" | grep -q '/usr/lib/swift/libswift_Concurrency.dylib'
           ! otool -arch x86_64 -L "${EXEC}" | grep -q '/usr/lib/swift/libswiftCore.dylib'
           test "$(find "${APP}/Contents/Frameworks" -name '*.dylib' | wc -l | tr -d ' ')" -ge 5
