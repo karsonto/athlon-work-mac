@@ -200,6 +200,39 @@ ensure_swift_runtime_extract() {
   "${SCRIPT_DIR}/extract-host-swift-runtime.sh" "${EXTRACT_DIR}"
 }
 
+dylib_contains_arch() {
+  local dylib="$1"
+  local arch="$2"
+  lipo -info "${dylib}" 2>/dev/null \
+    | sed -n 's/.*are: //p' \
+    | tr ' ' '\n' \
+    | grep -qx "${arch}"
+}
+
+patch_embedded_dylib_deployment_target() {
+  local dylib="$1"
+  local arch work="${dylib}.vtool-work"
+
+  cp "${dylib}" "${work}"
+  for arch in x86_64 arm64 arm64e; do
+    dylib_contains_arch "${dylib}" "${arch}" || continue
+    vtool -set-build-version macos 12.0 12.0 -replace -arch "${arch}" -output "${dylib}" "${work}"
+    cp "${dylib}" "${work}"
+  done
+  rm -f "${work}"
+}
+
+patch_embedded_dylibs_deployment_target() {
+  local frameworks="$1"
+  local dylib
+
+  shopt -s nullglob
+  for dylib in "${frameworks}"/*.dylib; do
+    patch_embedded_dylib_deployment_target "${dylib}"
+  done
+  shopt -u nullglob
+}
+
 verify_embedded_swift_core() {
   local frameworks="$1"
   local core="${frameworks}/libswiftCore.dylib"
@@ -211,6 +244,12 @@ verify_embedded_swift_core() {
 
   if ! lipo -info "${core}" 2>/dev/null | grep -q 'x86_64'; then
     echo "error: embedded libswiftCore.dylib is missing x86_64 slice (Intel Macs will crash)" >&2
+    return 1
+  fi
+
+  if ! vtool -show-build -arch x86_64 "${core}" 2>/dev/null | grep -q 'minos 12.0'; then
+    echo "error: embedded libswiftCore.dylib x86_64 slice is not tagged for macOS 12" >&2
+    vtool -show-build -arch x86_64 "${core}" 2>/dev/null | grep minos >&2 || true
     return 1
   fi
 
@@ -301,6 +340,7 @@ embed_swift_runtime() {
     return 1
   fi
 
+  patch_embedded_dylibs_deployment_target "${frameworks}"
   verify_embedded_swift_core "${frameworks}"
 
   local count
