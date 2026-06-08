@@ -13,6 +13,8 @@ struct AppPathProvider {
     var credentialsPath: String { (rootPath as NSString).appendingPathComponent("credentials") }
     var skillsPath: String { (rootPath as NSString).appendingPathComponent(Self.skillsFolderName) }
 
+    var memoryPath: String { (rootPath as NSString).appendingPathComponent("memory") }
+
     static let shared = AppPathProvider()
 
     init(homeDirectory: String = NSHomeDirectory()) {
@@ -25,7 +27,7 @@ struct AppPathProvider {
     }
 
     func ensureCreated() {
-        for path in [rootPath, configPath, sessionsPath, auditPath, logsPath, credentialsPath, skillsPath] {
+        for path in [rootPath, configPath, sessionsPath, auditPath, logsPath, credentialsPath, skillsPath, memoryPath] {
             try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
         }
     }

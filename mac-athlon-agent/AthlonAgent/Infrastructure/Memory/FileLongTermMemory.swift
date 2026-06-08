@@ -1,0 +1,108 @@
+import Foundation
+
+/// File-based two-layer long-term memory storage.
+/// Layer 1: memory/YYYY-MM-DD.md (append-only daily ledgers)
+/// Layer 2: memory/MEMORY.md     (LLM-consolidated, deduplicated, size-bounded)
+final class FileLongTermMemory: ILongTermMemory {
+    private let fileManager = FileManager.default
+    private let memoryDir: String
+    private let curatedPath: String
+    private let watermarkPath: String
+    private let archiveDir: String
+    private let dateFormatter: DateFormatter
+
+    init(memoryDir: String) throws {
+        self.memoryDir = memoryDir
+        self.curatedPath = (memoryDir as NSString).appendingPathComponent("MEMORY.md")
+        self.watermarkPath = (memoryDir as NSString).appendingPathComponent(".consolidation_state")
+        self.archiveDir = (memoryDir as NSString).appendingPathComponent("archive")
+        self.dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+
+        try fileManager.createDirectory(atPath: memoryDir, withIntermediateDirectories: true)
+    }
+
+    func readCurated() async throws -> String {
+        guard fileManager.fileExists(atPath: curatedPath) else { return "" }
+        return try String(contentsOfFile: curatedPath, encoding: .utf8)
+    }
+
+    func appendDaily(_ text: String) async throws {
+        let path = dailyPath(for: Date())
+        try fileManager.createDirectory(atPath: memoryDir, withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: path) {
+            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            try handle.seekToEnd()
+            if let data = text.data(using: .utf8) {
+                try handle.write(contentsOf: data)
+            }
+            try handle.close()
+        } else {
+            try text.write(toFile: path, atomically: true, encoding: .utf8)
+        }
+    }
+
+    func readDaily(date: Date) async throws -> String {
+        let path = dailyPath(for: date)
+        guard fileManager.fileExists(atPath: path) else { return "" }
+        return try String(contentsOfFile: path, encoding: .utf8)
+    }
+
+    func listDailyFilesAfter(watermark: Date) async throws -> [String] {
+        guard fileManager.fileExists(atPath: memoryDir) else { return [] }
+        let contents = try fileManager.contentsOfDirectory(atPath: memoryDir)
+        return contents
+            .filter { $0.hasSuffix(".md") && $0 != "MEMORY.md" }
+            .filter { fileName in
+                let nameWithoutExt = (fileName as NSString).deletingPathExtension
+                guard let fileDate = dateFormatter.date(from: nameWithoutExt) else { return false }
+                return fileDate > watermark || Calendar.current.isDate(fileDate, inSameDayAs: watermark)
+            }
+            .sorted()
+    }
+
+    func readDailyFile(relativePath: String) async throws -> String {
+        let path = (memoryDir as NSString).appendingPathComponent(relativePath)
+        guard fileManager.fileExists(atPath: path) else { return "" }
+        return try String(contentsOfFile: path, encoding: .utf8)
+    }
+
+    func writeCurated(_ content: String) async throws {
+        try content.write(toFile: curatedPath, atomically: true, encoding: .utf8)
+    }
+
+    func readWatermark() async throws -> Date {
+        guard fileManager.fileExists(atPath: watermarkPath) else { return Date.distantPast }
+        let text = try String(contentsOfFile: watermarkPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return Date.distantPast }
+        let formatter = ISO8601DateFormatter()
+        return formatter.date(from: text) ?? Date.distantPast
+    }
+
+    func writeWatermark(_ watermark: Date) async throws {
+        let formatter = ISO8601DateFormatter()
+        let text = formatter.string(from: watermark)
+        try text.write(toFile: watermarkPath, atomically: true, encoding: .utf8)
+    }
+
+    func archiveDailyFile(relativePath: String) async throws {
+        try fileManager.createDirectory(atPath: archiveDir, withIntermediateDirectories: true)
+        let src = (memoryDir as NSString).appendingPathComponent(relativePath)
+        let dst = (archiveDir as NSString).appendingPathComponent(relativePath)
+        try fileManager.moveItem(atPath: src, toPath: dst)
+    }
+
+    func listAllMemoryFilePaths() async throws -> [String] {
+        guard fileManager.fileExists(atPath: memoryDir) else { return [] }
+        let contents = try fileManager.contentsOfDirectory(atPath: memoryDir)
+        return contents
+            .filter { $0.hasSuffix(".md") }
+            .sorted()
+    }
+
+    private func dailyPath(for date: Date) -> String {
+        let fileName = dateFormatter.string(from: date) + ".md"
+        return (memoryDir as NSString).appendingPathComponent(fileName)
+    }
+}

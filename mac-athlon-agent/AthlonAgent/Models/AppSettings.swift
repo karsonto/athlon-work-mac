@@ -16,6 +16,7 @@ struct AppSettings: Codable {
     var agentTurn: AgentTurnSettings
     var fileRead: FileReadSettings
     var toolPermissions: ToolPermissionSettings
+    var memory: MemorySettings
 
     init(
         model: ModelSettings,
@@ -31,7 +32,8 @@ struct AppSettings: Codable {
         plan: PlanSettings = PlanSettings(),
         agentTurn: AgentTurnSettings = AgentTurnSettings(),
         fileRead: FileReadSettings = FileReadSettings(),
-        toolPermissions: ToolPermissionSettings = ToolPermissionSettings()
+        toolPermissions: ToolPermissionSettings = ToolPermissionSettings(),
+        memory: MemorySettings = MemorySettings()
     ) {
         self.model = model
         self.mcpServers = mcpServers
@@ -47,6 +49,7 @@ struct AppSettings: Codable {
         self.agentTurn = agentTurn
         self.fileRead = fileRead
         self.toolPermissions = toolPermissions
+        self.memory = memory
     }
 
     init(from decoder: Decoder) throws {
@@ -69,11 +72,13 @@ struct AppSettings: Codable {
         fileRead = try container.decodeIfPresent(FileReadSettings.self, forKey: .fileRead) ?? FileReadSettings()
         toolPermissions = try container.decodeIfPresent(ToolPermissionSettings.self, forKey: .toolPermissions)
             ?? ToolPermissionSettings()
+        memory = try container.decodeIfPresent(MemorySettings.self, forKey: .memory)
+            ?? MemorySettings()
     }
 
     private enum CodingKeys: String, CodingKey {
         case model, mcpServers, skills, workspaceIgnore, workspaces, appearance, ui, logging
-        case contextCompaction, prompt, plan, agentTurn, fileRead, toolPermissions
+        case contextCompaction, prompt, plan, agentTurn, fileRead, toolPermissions, memory
     }
 
     static let `default` = AppSettings(

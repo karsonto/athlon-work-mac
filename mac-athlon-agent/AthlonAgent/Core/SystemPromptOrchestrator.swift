@@ -25,10 +25,18 @@ struct EnvironmentPromptContext {
 struct SystemPromptOrchestrator {
     let settings: AppSettings
     let skillsDirectory: String
+    private let sections: [IEnvironmentPromptSection]
 
-    init(settings: AppSettings, skillsDirectory: String = AppPathProvider.shared.skillsPath) {
+    /// Optional post-processing hook applied to every reasoning iteration prompt.
+    /// Called after all built-in sections are appended, before the prompt is returned.
+    var postProcessPrompt: ((inout String) -> Void)?
+
+    init(settings: AppSettings,
+         skillsDirectory: String = AppPathProvider.shared.skillsPath,
+         sections: [IEnvironmentPromptSection] = []) {
         self.settings = settings
         self.skillsDirectory = skillsDirectory
+        self.sections = sections
     }
 
     func prepareForTurn(session: AgentSession, tools: [ToolDefinition], skills: [AvailableSkillInfo]) -> FrozenSystemPrompt {
@@ -43,6 +51,12 @@ struct SystemPromptOrchestrator {
         appendToolsPolicy(&builder, context: context)
         appendSkillsList(&builder, skills: skills)
         appendProductGuidance(&builder)
+        let staticSections = sections
+            .filter { $0.placement == .static }
+            .sorted { $0.order < $1.order }
+        for section in staticSections {
+            section.append(to: &builder, context: context)
+        }
         return FrozenSystemPrompt(text: formatPrompt(builder))
     }
 
@@ -51,7 +65,16 @@ struct SystemPromptOrchestrator {
         session: AgentSession,
         tools: [ToolDefinition]
     ) -> String {
-        frozen.text
+        var result = frozen.text
+        let context = makeContext(session: session, tools: tools)
+        let preCallSections = sections
+            .filter { $0.placement == .preCall }
+            .sorted { $0.order < $1.order }
+        for section in preCallSections {
+            section.append(to: &result, context: context)
+        }
+        postProcessPrompt?(&result)
+        return result
     }
 
     private func makeContext(session: AgentSession, tools: [ToolDefinition]) -> EnvironmentPromptContext {

@@ -11,7 +11,8 @@ enum BuiltInTools {
         mcpRegistry: McpRegistryProviding,
         sessionWorkspacePath: String? = nil,
         executeCommandRegistry: ExecuteCommandProcessRegistry? = nil,
-        planNotebook sharedPlanNotebook: PlanNotebook? = nil
+        planNotebook sharedPlanNotebook: PlanNotebook? = nil,
+        longTermMemory: ILongTermMemory? = nil
     ) -> CompositeToolRouter {
         let guard_ = WorkspaceGuard(workspaceService: workspaceService, settings: settings)
         if let sessionWorkspacePath {
@@ -45,7 +46,15 @@ enum BuiltInTools {
             FinishSubtaskTool(planNotebook: planNotebook, sessionContext: sessionContext)
         ]
 
-        return CompositeToolRouter(localTools: tools, mcpRegistry: mcpRegistry)
+        var memoryTools: [any AgentTool] = []
+        if let longTermMemory {
+            memoryTools = [
+                MemorySearchTool(longTermMemory: longTermMemory),
+                MemoryGetTool(longTermMemory: longTermMemory)
+            ]
+        }
+
+        return CompositeToolRouter(localTools: tools + memoryTools, mcpRegistry: mcpRegistry)
     }
 
     static func toolNames() -> [String] {
@@ -53,7 +62,8 @@ enum BuiltInTools {
             "file_list", "file_read", "file_write", "file_edit",
             "grep_files", "glob_files", "execute_command",
             "load_skill_through_path",
-            "create_plan", "get_plan", "finish_subtask"
+            "create_plan", "get_plan", "finish_subtask",
+            "memory_search", "memory_get"
         ]
     }
 

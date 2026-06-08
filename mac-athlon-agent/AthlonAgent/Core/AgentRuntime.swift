@@ -21,6 +21,8 @@ final class AgentRuntime: @unchecked Sendable {
     private let toolResultEvictor: ToolResultEvictor
     private let settings: AppSettings
     private let skillsProvider: () -> [AvailableSkillInfo]
+    private let longTermMemory: ILongTermMemory?
+    private let postTurnMemoryProcessor: IPostTurnMemoryProcessor?
 
     init(
         settings: AppSettings,
@@ -30,7 +32,9 @@ final class AgentRuntime: @unchecked Sendable {
         systemPromptOrchestrator: SystemPromptOrchestrator,
         preCompletionPipeline: PreCompletionPipeline,
         toolResultEvictor: ToolResultEvictor,
-        skillsProvider: @escaping () -> [AvailableSkillInfo]
+        skillsProvider: @escaping () -> [AvailableSkillInfo],
+        longTermMemory: ILongTermMemory? = nil,
+        postTurnMemoryProcessor: IPostTurnMemoryProcessor? = nil
     ) {
         self.settings = settings
         self.modelClient = modelClient
@@ -40,12 +44,16 @@ final class AgentRuntime: @unchecked Sendable {
         self.preCompletionPipeline = preCompletionPipeline
         self.toolResultEvictor = toolResultEvictor
         self.skillsProvider = skillsProvider
+        self.longTermMemory = longTermMemory
+        self.postTurnMemoryProcessor = postTurnMemoryProcessor
     }
 
     static func makeDefault(
         settings: AppSettings,
         toolRouter: CompositeToolRouter,
-        skillsProvider: @escaping () -> [AvailableSkillInfo]
+        skillsProvider: @escaping () -> [AvailableSkillInfo],
+        longTermMemory: ILongTermMemory? = nil,
+        postTurnMemoryProcessor: IPostTurnMemoryProcessor? = nil
     ) -> AgentRuntime {
         let storage = FileStorageService()
         let modelClient = OpenAiChatModelClient(settings: settings)
@@ -56,7 +64,12 @@ final class AgentRuntime: @unchecked Sendable {
         )
         let pipeline = PreCompletionPipeline(conversationCompactor: compactor)
         let evictor = ToolResultEvictor(settings: settings.contextCompaction, storage: storage)
-        let orchestrator = SystemPromptOrchestrator(settings: settings)
+        var orchestrator = SystemPromptOrchestrator(settings: settings)
+        if let longTermMemory {
+            orchestrator.postProcessPrompt = { prompt in
+                _ = MemoryPromptContributor(longTermMemory: longTermMemory).append(to: &prompt)
+            }
+        }
         return AgentRuntime(
             settings: settings,
             modelClient: modelClient,
@@ -65,7 +78,9 @@ final class AgentRuntime: @unchecked Sendable {
             systemPromptOrchestrator: orchestrator,
             preCompletionPipeline: pipeline,
             toolResultEvictor: evictor,
-            skillsProvider: skillsProvider
+            skillsProvider: skillsProvider,
+            longTermMemory: longTermMemory,
+            postTurnMemoryProcessor: postTurnMemoryProcessor
         )
     }
 
@@ -168,6 +183,14 @@ final class AgentRuntime: @unchecked Sendable {
                     await onMessage(assistant)
                 }
                 try? await storage.saveSession(workingSession)
+                // Fire-and-forget: flush turn messages to daily memory ledger
+                if let processor = postTurnMemoryProcessor {
+                    Task {
+                        let recentCount = min(workingSession.messages.count, 20)
+                        let turnMessages = Array(workingSession.messages.suffix(recentCount))
+                        _ = await processor.processTurn(messages: turnMessages)
+                    }
+                }
                 return workingSession
             }
 

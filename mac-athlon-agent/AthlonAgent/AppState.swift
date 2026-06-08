@@ -94,6 +94,16 @@ final class AppState: ObservableObject {
     private(set) var planNotebook: PlanNotebook!
     private let executeCommandRegistry = ExecuteCommandProcessRegistry()
     private let planAutoContinueTracker = PlanAutoContinueTracker()
+
+    // MARK: - Memory System
+    private(set) var longTermMemory: ILongTermMemory!
+    private(set) var memoryFlushService: MemoryFlushService!
+    private(set) var memoryConsolidationService: MemoryConsolidationService!
+    private(set) var postTurnMemoryProcessor: IPostTurnMemoryProcessor!
+
+    // MARK: - Composer Commands
+    private(set) var composerCommandRegistry: IComposerCommandRegistry!
+    private(set) var composerCommandExecutor: ComposerCommandExecutor!
     private var uiControllers: [String: SessionTurnUiController] = [:]
     private let sessionUiCache = SessionUiCache()
     private var uiSettingsSaveWorkItem: DispatchWorkItem?
@@ -183,6 +193,27 @@ final class AppState: ObservableObject {
             workspaceGuard: planWorkspaceGuard,
             sessionManager: sessionManager
         )
+        // Initialize memory system (BEFORE agentRuntime which depends on it)
+        do {
+            let memoryDir = AppPathProvider.shared.memoryPath
+            let fileLongTermMemory = try FileLongTermMemory(memoryDir: memoryDir)
+            longTermMemory = fileLongTermMemory
+            let modelClient = OpenAiChatModelClient(settings: settings)
+            memoryFlushService = MemoryFlushService(
+                longTermMemory: longTermMemory,
+                modelClient: modelClient,
+                settings: settings.memory
+            )
+            memoryConsolidationService = MemoryConsolidationService(
+                longTermMemory: longTermMemory,
+                modelClient: modelClient,
+                settings: settings.memory
+            )
+            postTurnMemoryProcessor = PostTurnMemoryProcessor(flushService: memoryFlushService)
+        } catch {
+            AgentFileLogger.log("Failed to initialize memory system: \(error.localizedDescription)", category: "Memory")
+        }
+
         agentRuntime = AgentRuntimeService(
             settings: settings,
             workspaceService: workspaceService,
@@ -190,8 +221,30 @@ final class AppState: ObservableObject {
             sessionManager: sessionManager,
             mcpClientService: mcpClientService,
             executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook
+            planNotebook: planNotebook,
+            longTermMemory: longTermMemory,
+            postTurnMemoryProcessor: postTurnMemoryProcessor
         )
+
+        // Initialize composer commands
+        composerCommandRegistry = ComposerCommandRegistry()
+        let sessionCompactionService = SessionCompactionService(
+            compactor: ConversationCompactor(
+                settings: settings.contextCompaction,
+                modelClient: OpenAiChatModelClient(settings: settings),
+                storage: FileStorageService()
+            )
+        )
+        composerCommandRegistry.register(CompactComposerCommand(compactionService: sessionCompactionService))
+        composerCommandRegistry.register(HelpComposerCommand(registry: composerCommandRegistry))
+        composerCommandExecutor = ComposerCommandExecutor(registry: composerCommandRegistry)
+
+        // Schedule periodic memory consolidation (hourly)
+        Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            Task { [weak self] in
+                await self?.memoryConsolidationService?.consolidate()
+            }
+        }
 
         sessionManager.loadSessions()
         if let existing = sessionManager.sessions.first {
@@ -279,7 +332,9 @@ final class AppState: ObservableObject {
             sessionManager: sessionManager,
             mcpClientService: mcpClientService,
             executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook
+            planNotebook: planNotebook,
+            longTermMemory: longTermMemory,
+            postTurnMemoryProcessor: postTurnMemoryProcessor
         )
     }
 
@@ -485,6 +540,23 @@ final class AppState: ObservableObject {
             text,
             availableSkills: skillService.availableSkillInfos(settings: settings)
         )
+
+        // Check for composer commands first
+        if let longTermMemory = longTermMemory {
+            let commandContext = ComposerCommandContext(
+                userInput: text,
+                session: session,
+                workspaceRoot: workspaceRootPath
+            )
+            let cmdResult = await composerCommandExecutor.tryExecute(input: text, context: commandContext)
+            if case .handled(let response) = cmdResult.outcome {
+                appendSystemMessage(response, sessionId: id)
+                sessionManager.setRunning(false, for: id)
+                updateBusyState()
+                return
+            }
+        }
+
         ui.addUserMessage(expanded, imageAttachments: images)
         session.isRunning = true
         session.interactionMode = interactionMode

@@ -63,6 +63,8 @@ final class AgentRuntimeService: ObservableObject {
     private let mcpClientService: McpClientService
     private let executeCommandRegistry: ExecuteCommandProcessRegistry
     private let planNotebook: PlanNotebook
+    private let longTermMemory: ILongTermMemory?
+    private let postTurnMemoryProcessor: IPostTurnMemoryProcessor?
 
     init(
         settings: AppSettings,
@@ -71,7 +73,9 @@ final class AgentRuntimeService: ObservableObject {
         sessionManager: SessionManager,
         mcpClientService: McpClientService,
         executeCommandRegistry: ExecuteCommandProcessRegistry,
-        planNotebook: PlanNotebook
+        planNotebook: PlanNotebook,
+        longTermMemory: ILongTermMemory? = nil,
+        postTurnMemoryProcessor: IPostTurnMemoryProcessor? = nil
     ) {
         self.settings = settings
         self.workspaceService = workspaceService
@@ -80,6 +84,8 @@ final class AgentRuntimeService: ObservableObject {
         self.mcpClientService = mcpClientService
         self.executeCommandRegistry = executeCommandRegistry
         self.planNotebook = planNotebook
+        self.longTermMemory = longTermMemory
+        self.postTurnMemoryProcessor = postTurnMemoryProcessor
     }
 
     func reconfigure(settings: AppSettings) {
@@ -129,7 +135,8 @@ final class AgentRuntimeService: ObservableObject {
             mcpRegistry: mcpClientService.registryProvider,
             sessionWorkspacePath: effectiveSessionWorkspace,
             executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook
+            planNotebook: planNotebook,
+            longTermMemory: longTermMemory
         )
 
         let agentRuntime = runtime ?? AgentRuntime.makeDefault(
@@ -138,7 +145,9 @@ final class AgentRuntimeService: ObservableObject {
             skillsProvider: { [weak skillService, weak self] in
                 guard let skillService, let self else { return [] }
                 return skillService.availableSkillInfos(settings: self.settings)
-            }
+            },
+            longTermMemory: longTermMemory,
+            postTurnMemoryProcessor: postTurnMemoryProcessor
         )
         runtime = agentRuntime
 
