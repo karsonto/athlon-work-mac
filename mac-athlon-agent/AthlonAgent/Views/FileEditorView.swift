@@ -106,6 +106,9 @@ struct FileEditorView: View {
                 .background(colors.panel)
             }
         }
+        .onAppear {
+            viewModel.appState = appState
+        }
     }
 }
 

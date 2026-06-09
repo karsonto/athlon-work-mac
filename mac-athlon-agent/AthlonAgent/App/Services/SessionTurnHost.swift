@@ -4,6 +4,7 @@ import os.lock
 /// A simple os_unfair_lock wrapper that is safe to use from async Swift 6 contexts.
 final class Lock: @unchecked Sendable {
     private var _lock = os_unfair_lock()
+    @discardableResult
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }

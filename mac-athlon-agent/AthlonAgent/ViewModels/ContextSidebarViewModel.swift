@@ -15,7 +15,7 @@ final class ContextSidebarViewModel: ObservableObject {
     @Published var mcpServers: [McpServerStatusItem] = []
     @Published var workspaceRootName: String = "未配置工作区"
 
-    weak var appState: AppState?
+    var appState: AppState?
 
     init(appState: AppState) {
         self.appState = appState
@@ -59,7 +59,7 @@ final class ContextSidebarViewModel: ObservableObject {
         } else {
             mcpServers = configs.map { server in
                 let state = appState.mcpClientService?.connectionState(for: server.id)
-                McpServerStatusItem(
+                return McpServerStatusItem(
                     name: server.name,
                     isEnabled: server.enabled,
                     status: state

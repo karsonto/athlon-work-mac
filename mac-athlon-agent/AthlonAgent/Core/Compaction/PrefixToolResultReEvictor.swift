@@ -48,7 +48,7 @@ enum PrefixToolResultReEvictor {
         }
 
         let head = String(content[..<range.upperBound])
-        var preview = String(content[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = String(content[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
         if preview.count <= previewChars * 2 { return content }
 
         let shortened = String(preview.prefix(previewChars)) + "\n...\n" + String(preview.suffix(previewChars))
