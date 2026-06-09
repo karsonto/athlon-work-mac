@@ -1,5 +1,6 @@
 // AthlonAgent/Views/FileEditorView.swift
 import SwiftUI
+import AppKit
 
 struct FileEditorView: View {
     @EnvironmentObject var appState: AppState
@@ -58,16 +59,17 @@ struct FileEditorView: View {
 
                     Divider().background(colors.border)
 
-                    // Text editor
-                    TextEditor(text: Binding(
-                        get: { doc.content },
-                        set: { doc.onContentChanged($0) }
-                    ))
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundColor(colors.text)
-                    .scrollContentBackground(.hidden)
-                    .background(colors.appBackground)
-                    .disabled(doc.isReadOnly)
+                    // Text editor with syntax highlighting
+                    CodeEditorContentView(
+                        text: Binding(
+                            get: { doc.content },
+                            set: { doc.onContentChanged($0) }
+                        ),
+                        isReadOnly: doc.isReadOnly,
+                        filePath: doc.filePath,
+                        isDark: appState.theme == .dark
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
                 VStack(spacing: DesignTokens.Spacing.md) {
