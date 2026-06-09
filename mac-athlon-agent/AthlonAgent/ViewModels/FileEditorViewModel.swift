@@ -38,8 +38,35 @@ final class FileEditorViewModel: ObservableObject {
         return true
     }
 
-    func closeTab(_ doc: EditorDocumentViewModel) {
+    func closeTab(_ doc: EditorDocumentViewModel, force: Bool = false) {
         guard let idx = tabs.firstIndex(where: { $0.id == doc.id }) else { return }
+
+        if doc.isDirty && !force {
+            Task { @MainActor in
+                let alert = NSAlert()
+                alert.messageText = "「\(doc.displayName)」有未保存的更改"
+                alert.informativeText = "是否在关闭前保存更改？"
+                alert.addButton(withTitle: "保存")
+                alert.addButton(withTitle: "不保存")
+                alert.addButton(withTitle: "取消")
+                alert.alertStyle = .warning
+                let response = alert.runModal()
+                switch response {
+                case .alertFirstButtonReturn: // 保存
+                    let saved = await saveDocument(doc)
+                    if saved { performCloseTab(doc, at: idx) }
+                case .alertSecondButtonReturn: // 不保存
+                    performCloseTab(doc, at: idx)
+                default: // 取消
+                    break
+                }
+            }
+            return
+        }
+        performCloseTab(doc, at: idx)
+    }
+
+    private func performCloseTab(_ doc: EditorDocumentViewModel, at idx: Int) {
         tabs.remove(at: idx)
         if tabs.isEmpty {
             activeDocument = nil
