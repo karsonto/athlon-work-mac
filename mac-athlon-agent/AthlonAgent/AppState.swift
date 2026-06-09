@@ -579,6 +579,12 @@ final class AppState: ObservableObject {
         updateBusyState()
     }
 
+    /// Public cancellation entry point expected by ComposerView stop button.
+    /// Delegates to stopAgent() which performs full turn cancellation.
+    func cancelActiveSession() {
+        stopAgent()
+    }
+
     func stopAgent() {
         guard let id = activeSessionId else { return }
         sessionTurnHost.cancel(sessionId: id)

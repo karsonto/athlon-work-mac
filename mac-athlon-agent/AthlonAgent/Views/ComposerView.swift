@@ -135,7 +135,7 @@ struct ComposerView: View {
                 Spacer()
 
                 if appState.isBusy {
-                    Button(action: { appState.stopAgent() }) {
+                    Button(action: { appState.cancelActiveSession() }) {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
