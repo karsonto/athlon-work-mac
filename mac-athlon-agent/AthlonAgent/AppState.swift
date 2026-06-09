@@ -1382,11 +1382,3 @@ struct QueuedTurnImage: Identifiable {
     let fileName: String
     let thumbnail: Data?
 }
-
-// MARK: - At Completion
-struct AtCompletionItem: Identifiable {
-    let id: String
-    let type: String // "文件" or "技能"
-    let primaryText: String
-    let secondaryText: String
-}

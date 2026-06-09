@@ -123,6 +123,7 @@ private struct SkillsListView: View {
         }
     }
 }
+}
 
 // MARK: - Right sidebar toggle glyph (WPF RightSidebarToggleIcon)
 struct RightSidebarToggleIcon: View {
