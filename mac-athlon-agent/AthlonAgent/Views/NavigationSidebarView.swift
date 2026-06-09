@@ -371,10 +371,10 @@ struct SessionRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(isRunning ? colors.danger : Color.clear)
-                .frame(width: 6, height: 6)
+                .fill(isRunning ? colors.success : Color.clear)
+                .frame(width: 8, height: 8)
 
-            Image(systemName: isRunning ? "circle.dotted" : "bubble.left")
+            Image(systemName: "bubble.left")
                 .font(.system(size: 12))
                 .foregroundColor(isActive ? colors.navActiveText : colors.subtleText)
 
