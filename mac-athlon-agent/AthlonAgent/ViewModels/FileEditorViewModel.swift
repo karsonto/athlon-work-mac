@@ -10,7 +10,7 @@ final class FileEditorViewModel: ObservableObject {
     var hasOpenTabs: Bool { !tabs.isEmpty }
     var hasUnsavedChanges: Bool { tabs.contains { $0.isDirty } }
 
-    private var appState: AppState?
+    var appState: AppState?
 
     init(appState: AppState) {
         self.appState = appState
