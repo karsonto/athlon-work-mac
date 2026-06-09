@@ -330,6 +330,10 @@ final class AppState: ObservableObject {
         do {
             settings = try SettingsStore.save(settings)
             settings = SettingsStore.load()
+            // Save API Key to macOS Keychain for secure storage
+            if !settings.model.apiKey.isEmpty {
+                try? CredentialStore().save(settings.model.apiKey, for: CredentialStore.apiKeyAccount)
+            }
             mcpClientService.syncFromSettings(settings.mcpServers)
             mcpClientService.refreshConnections(settings: settings.mcpServers, workspaceRoot: workspaceRootPath)
             skillService.reload(savedSettings: settings.skills)

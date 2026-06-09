@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsPageView: View {
     @EnvironmentObject var appState: AppState
     @State private var selectedTab: SettingsTab = .model
+    @State private var hasStoredApiKey: Bool = false
 
     private var colors: ThemeColors {
         appState.theme == .dark ? .dark : .light
@@ -113,6 +114,17 @@ struct SettingsPageView: View {
             settingsField("Max Tokens", text: maxTokensBinding, placeholder: "0 (auto)")
             settingsField("API Key", text: $appState.settings.model.apiKey, placeholder: "sk-...", secure: true)
 
+            if hasStoredApiKey {
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(colors.success)
+                    Text("API Key 已安全存储在系统钥匙串中")
+                        .font(.system(size: 11))
+                        .foregroundColor(colors.success)
+                }
+            }
+
             Toggle("启用流式输出", isOn: $appState.settings.model.enableStreaming)
                 .font(.system(size: 13))
                 .toggleStyle(.switch)
@@ -122,9 +134,13 @@ struct SettingsPageView: View {
 
             Button("保存设置") {
                 appState.saveSettings()
+                hasStoredApiKey = CredentialStore().has(for: CredentialStore.apiKeyAccount)
             }
             .buttonStyle(.borderedProminent)
             .tint(colors.accent)
+        }
+        .onAppear {
+            hasStoredApiKey = CredentialStore().has(for: CredentialStore.apiKeyAccount)
         }
     }
 
