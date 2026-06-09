@@ -146,7 +146,24 @@ final class SessionTurnUiController {
 
     @MainActor
     private func ensureStreamingAssistantVisible() {
-        guard let appState, let id = assistantMessageId, !assistantVisibleInUI else { return }
+        guard let appState, let id = assistantMessageId else { return }
+
+        if let index = appState.messages.firstIndex(where: { $0.id == id }) {
+            var updated = appState.messages
+            var message = updated[index]
+            message.isStreaming = true
+            if index < updated.count - 1 {
+                updated.remove(at: index)
+                updated.append(message)
+            } else {
+                updated[index] = message
+            }
+            appState.messages = updated
+            assistantVisibleInUI = true
+            return
+        }
+
+        guard !assistantVisibleInUI else { return }
         assistantVisibleInUI = true
         let message = ChatMessage(
             id: id,
@@ -156,6 +173,36 @@ final class SessionTurnUiController {
             isStreaming: true
         )
         appState.appendMessage(message, sessionId: sessionId)
+    }
+
+    /// Seals a streaming assistant segment at a tool boundary (WPF `ReleaseAssistantBubble`).
+    @MainActor
+    private func releaseAssistantBubble(messageId: String) {
+        guard let appState else { return }
+        guard let index = appState.messages.firstIndex(where: { $0.id == messageId }) else {
+            if assistantMessageId == messageId {
+                assistantVisibleInUI = false
+            }
+            return
+        }
+
+        var updated = appState.messages
+        var message = updated[index]
+        let hasContent = !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        if !hasContent {
+            updated.remove(at: index)
+            appState.messages = updated
+            assistantVisibleInUI = false
+            return
+        }
+
+        message.isStreaming = false
+        message.isReasoningStreaming = false
+        updated[index] = message
+        appState.messages = updated
+        assistantVisibleInUI = false
     }
 
     @MainActor
@@ -191,8 +238,12 @@ final class SessionTurnUiController {
             let wasEmpty = streamingReasoningBuffer.isEmpty
             streamingReasoningBuffer = Self.mergeDeltaBuffer(current: streamingReasoningBuffer, delta: delta)
             if wasEmpty { streamingCoalescer?.flushNow() } else { streamingCoalescer?.scheduleFlush() }
-        case .textMessageEnd, .reasoningMessageEnd:
+        case .textMessageEnd(let messageId):
             streamingCoalescer?.flushNow()
+            releaseAssistantBubble(messageId: messageId)
+        case .reasoningMessageEnd(let messageId):
+            streamingCoalescer?.flushNow()
+            releaseAssistantBubble(messageId: messageId)
         case .toolCallStart(let toolCallId, let toolName, _):
             appendToolCall(AgentToolCall(
                 id: toolCallId,
@@ -207,6 +258,8 @@ final class SessionTurnUiController {
             finalizeStreamingToolCall(toolCallId: toolCallId)
         case .clearEmptyAssistantPlaceholder:
             clearEmptyStreamingAssistant()
+        case .runFinished:
+            streamingCoalescer?.cancel()
         case .chatMessageAppended(let message):
             handleChatMessageAppended(message)
         default:
@@ -251,6 +304,7 @@ final class SessionTurnUiController {
 
     private func applyPendingStreamingSnapshot() {
         guard let appState else { return }
+        guard appState.isSessionTurnActive(sessionId) else { return }
         if assistantMessageId == nil {
             _ = reserveAssistantMessageId()
         }
@@ -487,6 +541,7 @@ final class SessionTurnUiController {
             )
         }
 
+        appState.clearStreamingFlags(sessionId: self.sessionId)
         self.resetForTurn()
         appState.finishTurnUI(sessionId: self.sessionId)
     }

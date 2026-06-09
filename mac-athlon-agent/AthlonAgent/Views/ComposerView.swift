@@ -115,7 +115,7 @@ struct ComposerView: View {
 
                 Spacer()
 
-                if appState.isAgentRunning {
+                if appState.isBusy {
                     Button(action: { appState.stopAgent() }) {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 12, weight: .bold))

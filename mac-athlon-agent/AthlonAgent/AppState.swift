@@ -32,8 +32,6 @@ final class AppState: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var isBusy: Bool = false
     @Published var streamingText: String = ""
-    /// Live assistant bubble for the active turn — pinned to the bottom of the chat timeline while running.
-    @Published var pinnedAssistantMessageId: String?
 
     // MARK: - Sessions
     @Published var sessionGroups: [SessionHistoryGroup] = []
@@ -198,20 +196,23 @@ final class AppState: ObservableObject {
             conversationCompactor: compactionCompactor,
             settings: settings.contextCompaction
         )
-        var compactionOrchestrator = SystemPromptOrchestrator(
-            settings: settings,
-            sections: [
-                SubAgentDelegationSection(settings: settings),
-                SubAgentPersonaSection(),
-                EncodingPolicySection(),
-                WorkspaceFilesSection()
-            ]
-        )
+        var compactionContributors: [IPreReasoningPromptContributor] = []
         if let longTermMemory {
-            compactionOrchestrator.postProcessPrompt = { prompt in
-                _ = await MemoryPromptContributor(longTermMemory: longTermMemory).append(to: &prompt)
-            }
+            compactionContributors.append(
+                MemoryPromptContributor(longTermMemory: longTermMemory, settings: settings.memory)
+            )
         }
+        let compactionOrchestrator = SystemPromptOrchestrator(
+            settings: settings,
+            sections: EnvironmentPromptSections.makeAll(
+                settings: settings,
+                skillsProvider: { [weak skillService, weak self] in
+                    guard let skillService, let self else { return [] }
+                    return skillService.availableSkillInfos(settings: self.settings)
+                }
+            ),
+            preReasoningContributors: compactionContributors
+        )
         let compactionToolRouter = BuiltInTools.makeAll(
             workspaceService: workspaceService,
             settings: settings,
@@ -480,7 +481,7 @@ final class AppState: ObservableObject {
         _ = sessionUiCache.get(sessionId)
         sessionManager.activateSession(sessionId)
         if let session = sessionManager.getSession(sessionId) {
-            messages = session.messages
+            messages = ChatTimelineOrder.orderForDisplay(session.messages)
             applySessionWorkspace(for: session)
         }
         sessionGroups = buildSessionGroups()
@@ -581,7 +582,6 @@ final class AppState: ObservableObject {
         sessionTurnHost.clearQueue(sessionId: id)
         syncQueuedTurns(sessionId: id)
         composerStatusMessage = ""
-        pinnedAssistantMessageId = nil
 
         if let request = sessionTurnHost.abortTurn(sessionId: id) {
             finalizeAbortedTurn(sessionId: id, request: request)
@@ -727,7 +727,12 @@ final class AppState: ObservableObject {
             }
         }
 
-        messages = (others + toolByCallId.values).sorted { $0.createdAt < $1.createdAt }
+        var ordered = ChatTimelineOrder.orderForDisplay(others + Array(toolByCallId.values))
+        for index in ordered.indices {
+            ordered[index].isStreaming = false
+            ordered[index].isReasoningStreaming = false
+        }
+        messages = ordered
     }
 
     private func mergeMessagePreferringRicher(_ mergedById: inout [String: ChatMessage], _ message: ChatMessage) {
@@ -779,19 +784,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    func isSessionTurnActive(_ sessionId: String) -> Bool {
+        sessionTurnHost.isRunning(sessionId)
+    }
+
     func updateMessageContent(
         sessionId: String,
         messageId: String,
         content: String,
         isStreaming: Bool = true
     ) {
+        let effectiveStreaming = isStreaming && sessionTurnHost.isRunning(sessionId)
         mutateActiveMessage(messageId: messageId, sessionId: sessionId) { message in
             message.content = content
-            message.isStreaming = isStreaming
+            message.isStreaming = effectiveStreaming
             if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 message.isReasoningStreaming = false
             }
-            if !isStreaming {
+            if !effectiveStreaming {
                 message = message.withPromotedAnswer()
                 message.isReasoningStreaming = false
             }
@@ -801,7 +811,7 @@ final class AppState: ObservableObject {
                     messageId: messageId,
                     contentLength: content.count,
                     reasoningLength: message.reasoningContent.count,
-                    isStreaming: isStreaming,
+                    isStreaming: effectiveStreaming,
                     source: "updateMessageContent"
                 )
             }
@@ -809,8 +819,8 @@ final class AppState: ObservableObject {
         sessionManager.updateSessionInMemory(sessionId) { session in
             guard let index = session.messages.firstIndex(where: { $0.id == messageId }) else { return }
             session.messages[index].content = content
-            session.messages[index].isStreaming = isStreaming
-            if !isStreaming {
+            session.messages[index].isStreaming = effectiveStreaming
+            if !effectiveStreaming {
                 session.messages[index] = session.messages[index].withPromotedAnswer()
             }
         }
@@ -826,12 +836,36 @@ final class AppState: ObservableObject {
         content: String,
         isReasoningStreaming: Bool = true
     ) {
+        let effectiveReasoningStreaming = isReasoningStreaming && sessionTurnHost.isRunning(sessionId)
         mutateActiveMessage(messageId: messageId, sessionId: sessionId) { message in
-            applyReasoningChannel(to: &message, incoming: content, isReasoningStreaming: isReasoningStreaming)
+            applyReasoningChannel(to: &message, incoming: content, isReasoningStreaming: effectiveReasoningStreaming)
         }
         sessionManager.updateSessionInMemory(sessionId) { session in
             guard let index = session.messages.firstIndex(where: { $0.id == messageId }) else { return }
-            applyReasoningChannel(to: &session.messages[index], incoming: content, isReasoningStreaming: isReasoningStreaming)
+            applyReasoningChannel(to: &session.messages[index], incoming: content, isReasoningStreaming: effectiveReasoningStreaming)
+        }
+    }
+
+    /// Clears live streaming flags after a turn ends (prevents stale cursors / stop affordance).
+    func clearStreamingFlags(sessionId: String) {
+        let apply: (inout ChatMessage) -> Void = { message in
+            if message.isStreaming || message.isReasoningStreaming {
+                message.isStreaming = false
+                message.isReasoningStreaming = false
+                message = message.withPromotedAnswer()
+            }
+        }
+        if sessionId == activeSessionId {
+            var updated = messages
+            for index in updated.indices {
+                apply(&updated[index])
+            }
+            messages = updated
+        }
+        sessionManager.updateSessionInMemory(sessionId) { session in
+            for index in session.messages.indices {
+                apply(&session.messages[index])
+            }
         }
     }
 
@@ -908,7 +942,6 @@ final class AppState: ObservableObject {
         }
         sessionManager.persistSession(sessionId)
         if sessionId == activeSessionId {
-            pinnedAssistantMessageId = nil
             composerStatusMessage = ""
             syncSessionState()
         } else {
@@ -955,9 +988,6 @@ final class AppState: ObservableObject {
         }
 
         let assistantId = request.ui.reserveAssistantMessageId()
-        if sessionId == activeSessionId {
-            pinnedAssistantMessageId = assistantId
-        }
 
         if let latest = sessionManager.getSession(sessionId) {
             session = latest

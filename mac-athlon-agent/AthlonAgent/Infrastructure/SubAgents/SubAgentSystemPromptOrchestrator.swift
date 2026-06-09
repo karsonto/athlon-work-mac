@@ -1,9 +1,8 @@
 import Foundation
 
-/// Sub-agent prompt orchestrator aligned with WPF `SubAgentSystemPromptOrchestrator`:
-/// reuses parent environment sections but excludes parent-only persona, product guidance, and delegation.
+/// Sub-agent prompt orchestrator aligned with WPF `SubAgentSystemPromptOrchestrator`.
 struct SubAgentSystemPromptOrchestrator {
-    private var orchestrator: SystemPromptOrchestrator
+    private let orchestrator: SystemPromptOrchestrator
 
     init(
         settings: AppSettings,
@@ -13,23 +12,25 @@ struct SubAgentSystemPromptOrchestrator {
     ) {
         let sections: [IEnvironmentPromptSection] = [
             SubAgentPersonaSection(),
+            HostEnvironmentSection(),
             EncodingPolicySection(),
+            WorkspacePolicySection(),
             WorkspaceFilesSection(),
+            FileToolsPolicySection(),
+            ToolsPolicySection(),
             SkillsSection(skillsProvider: skillsProvider),
         ]
-        let filtered = sections.filter { !($0 is SubAgentDelegationSection) }
-        var orch = SystemPromptOrchestrator(
-            settings: settings,
-            skillsDirectory: skillsDirectory,
-            sections: filtered
-        )
-        orch.isSubAgent = true
+
+        var contributors: [IPreReasoningPromptContributor] = []
         if let longTermMemory {
-            orch.postProcessPrompt = { prompt in
-                _ = await MemoryPromptContributor(longTermMemory: longTermMemory).append(to: &prompt)
-            }
+            contributors.append(MemoryPromptContributor(longTermMemory: longTermMemory, settings: settings.memory))
         }
-        self.orchestrator = orch
+
+        self.orchestrator = SystemPromptOrchestrator(
+            settings: settings,
+            sections: sections,
+            preReasoningContributors: contributors
+        )
     }
 
     func prepareForTurn(

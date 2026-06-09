@@ -232,7 +232,6 @@ final class SessionTurnHost {
                     { reasoning in self.request.ui.appendReasoning(reasoning) }
                 ) { result in
                     timeoutWork?.cancel()
-                    guard host.consumeRunnerFinish(for: self) else { return }
 
                     let timedOut = self.cancelled && self.timeout != nil
                     let errorMessage: String? = {
@@ -269,13 +268,6 @@ final class SessionTurnHost {
                             errorMessage: nil,
                             reconciledMessages: reconciled
                         )
-                        host.notifyTurnCompleted(
-                            runner: self,
-                            session: session,
-                            cancelled: self.cancelled,
-                            timedOut: timedOut,
-                            error: nil
-                        )
                     case .failure(let error):
                         self.request.ui.finalizeTurn(
                             fullText: "",
@@ -284,6 +276,20 @@ final class SessionTurnHost {
                             errorMessage: error.localizedDescription,
                             reconciledMessages: reconciled
                         )
+                    }
+
+                    guard host.consumeRunnerFinish(for: self) else { return }
+
+                    switch result {
+                    case .success:
+                        host.notifyTurnCompleted(
+                            runner: self,
+                            session: session,
+                            cancelled: self.cancelled,
+                            timedOut: timedOut,
+                            error: nil
+                        )
+                    case .failure(let error):
                         host.notifyTurnCompleted(
                             runner: self,
                             session: session,

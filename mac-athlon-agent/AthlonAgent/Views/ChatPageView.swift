@@ -137,10 +137,7 @@ private struct ChatMessagesArea: View {
             .onChange(of: appState.activeMessages.last?.content) {
                 scrollToBottom(scrollProxy)
             }
-            .onChange(of: appState.pinnedAssistantMessageId) {
-                scrollToBottom(scrollProxy)
-            }
-            .onChange(of: pinnedAssistantSnapshot) {
+            .onChange(of: appState.isBusy) {
                 scrollToBottom(scrollProxy)
             }
         }
@@ -162,19 +159,9 @@ private struct ChatMessagesArea: View {
         }
     }
 
+    /// Live timeline uses append order (WPF `ObservableCollection`); hydrate uses `ChatTimelineOrder`.
     private var chatDisplayMessages: [ChatMessage] {
-        let pinId = appState.isAgentRunning ? appState.pinnedAssistantMessageId : nil
-        return ChatTimelineOrder.orderForDisplay(appState.activeMessages, pinToEndMessageId: pinId)
-            .filter(\.shouldShowInChatTimeline)
-    }
-
-    /// Drives scroll updates while the pinned assistant streams (content/reasoning may not be `last`).
-    private var pinnedAssistantSnapshot: String {
-        guard let pinId = appState.pinnedAssistantMessageId,
-              let message = appState.activeMessages.first(where: { $0.id == pinId }) else {
-            return ""
-        }
-        return "\(message.content.count)|\(message.reasoningContent.count)|\(message.isStreaming)"
+        appState.activeMessages.filter(\.shouldShowInChatTimeline)
     }
 
     private func shouldShowAssistantBubble(_ message: ChatMessage) -> Bool {

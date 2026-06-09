@@ -12,7 +12,7 @@ struct StatusBarView: View {
         if appState.agentRuntime?.error != nil {
             return colors.danger
         }
-        if appState.isAgentRunning {
+        if appState.isBusy {
             return colors.accent
         }
         return colors.success
@@ -22,7 +22,7 @@ struct StatusBarView: View {
         if appState.agentRuntime?.error != nil {
             return "Error"
         }
-        if appState.isAgentRunning {
+        if appState.isBusy {
             return "Generating"
         }
         return "Ready"

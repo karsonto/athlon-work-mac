@@ -2,7 +2,7 @@ import Foundation
 
 /// Defines the persona for sub-agent sessions.
 struct SubAgentPersonaSection: IEnvironmentPromptSection {
-    let order = 60
+    let order = 50
     let placement: PromptSectionPlacement = .static
 
     func append(to builder: inout String, context: EnvironmentPromptContext) {

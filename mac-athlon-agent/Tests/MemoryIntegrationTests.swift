@@ -160,21 +160,43 @@ final class MemoryIntegrationTests: XCTestCase {
 
     func testMemoryPromptContributorAppendsLongTermMemory() async throws {
         try await memory.writeCurated("# Previous Decision\n- Use Swift concurrency\n")
-        let contributor = MemoryPromptContributor(longTermMemory: memory)
+        let contributor = MemoryPromptContributor(longTermMemory: memory, settings: MemorySettings())
         var builder = "Base prompt\n"
-        let appended = await contributor.append(to: &builder)
-        XCTAssertTrue(appended)
+        await contributor.append(to: &builder, context: makePromptContext())
+        XCTAssertTrue(builder.contains("## Long-Term Memory"))
         XCTAssertTrue(builder.contains("<long_term_memory>"))
         XCTAssertTrue(builder.contains("Swift concurrency"))
         XCTAssertTrue(builder.contains("</long_term_memory>"))
     }
 
     func testMemoryPromptContributorSkipsWhenEmpty() async throws {
-        let contributor = MemoryPromptContributor(longTermMemory: memory)
+        let contributor = MemoryPromptContributor(longTermMemory: memory, settings: MemorySettings())
         var builder = "Base prompt\n"
-        let appended = await contributor.append(to: &builder)
-        XCTAssertFalse(appended)
+        await contributor.append(to: &builder, context: makePromptContext())
         XCTAssertEqual(builder, "Base prompt\n")
+    }
+
+    private func makePromptContext() -> EnvironmentPromptContext {
+        let now = Date()
+        let session = AgentSession(
+            id: "test",
+            title: "Test",
+            messages: [],
+            createdAt: now,
+            updatedAt: now,
+            isActive: true,
+            isRunning: false,
+            queuedTurnCount: 0
+        )
+        return EnvironmentPromptContext(
+            session: session,
+            workspaceRoot: nil,
+            workspaceName: nil,
+            ignorePatterns: [],
+            tools: [],
+            host: MacAgentHostEnvironment(skillsDirectory: "/tmp/skills"),
+            promptSettings: PromptSettings()
+        )
     }
 
     // MARK: - EnvironmentPromptContext
@@ -191,13 +213,14 @@ final class MemoryIntegrationTests: XCTestCase {
             isRunning: false,
             queuedTurnCount: 0
         )
+        let host = MacAgentHostEnvironment(skillsDirectory: "/tmp/skills")
         let contextNoWorkspace = EnvironmentPromptContext(
             session: session,
             workspaceRoot: nil,
             workspaceName: nil,
             ignorePatterns: [],
             tools: [],
-            skillsDirectory: "/tmp/skills",
+            host: host,
             promptSettings: PromptSettings()
         )
         XCTAssertFalse(contextNoWorkspace.hasWorkspace)
@@ -208,7 +231,7 @@ final class MemoryIntegrationTests: XCTestCase {
             workspaceName: "workspace",
             ignorePatterns: [],
             tools: [],
-            skillsDirectory: "/tmp/skills",
+            host: host,
             promptSettings: PromptSettings()
         )
         XCTAssertTrue(contextWithWorkspace.hasWorkspace)

@@ -72,21 +72,20 @@ final class AgentRuntime: @unchecked Sendable {
             settings: settings.contextCompaction
         )
         let evictor = ToolResultEvictor(settings: settings.contextCompaction, storage: storage)
-        var orchestrator = SystemPromptOrchestrator(
-            settings: settings,
-            sections: [
-                SubAgentDelegationSection(settings: settings),
-                SubAgentPersonaSection(),
-                EncodingPolicySection(),
-                WorkspaceFilesSection(),
-                SkillsSection(skillsProvider: skillsProvider)
-            ]
-        )
+        var preReasoningContributors: [IPreReasoningPromptContributor] = []
         if let longTermMemory {
-            orchestrator.postProcessPrompt = { prompt in
-                _ = await MemoryPromptContributor(longTermMemory: longTermMemory).append(to: &prompt)
-            }
+            preReasoningContributors.append(
+                MemoryPromptContributor(longTermMemory: longTermMemory, settings: settings.memory)
+            )
         }
+        let orchestrator = SystemPromptOrchestrator(
+            settings: settings,
+            sections: EnvironmentPromptSections.makeAll(
+                settings: settings,
+                skillsProvider: skillsProvider
+            ),
+            preReasoningContributors: preReasoningContributors
+        )
         return AgentRuntime(
             settings: settings,
             modelClient: modelClient,

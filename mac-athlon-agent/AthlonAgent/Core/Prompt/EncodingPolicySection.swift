@@ -2,7 +2,7 @@ import Foundation
 
 /// Informs the model about encoding and locale expectations.
 struct EncodingPolicySection: IEnvironmentPromptSection {
-    let order = 20
+    let order = 210
     let placement: PromptSectionPlacement = .static
 
     func append(to builder: inout String, context: EnvironmentPromptContext) {

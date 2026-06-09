@@ -117,7 +117,7 @@ final class WorkspacePromptLoaderTests: XCTestCase {
             workspaceName: "test",
             ignorePatterns: ignorePatterns,
             tools: [],
-            skillsDirectory: "/tmp/skills",
+            host: MacAgentHostEnvironment(skillsDirectory: "/tmp/skills"),
             promptSettings: promptSettings
         )
     }
