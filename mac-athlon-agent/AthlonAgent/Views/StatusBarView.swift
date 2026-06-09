@@ -8,61 +8,41 @@ struct StatusBarView: View {
         appState.theme == .dark ? .dark : .light
     }
 
-    private var connectionColor: Color {
-        if appState.agentRuntime?.error != nil {
-            return colors.danger
-        }
-        if appState.isBusy {
-            return colors.accent
-        }
-        return colors.success
-    }
-
-    private var connectionLabel: String {
-        if appState.agentRuntime?.error != nil {
-            return "Error"
-        }
-        if appState.isBusy {
-            return "Generating"
-        }
-        return "Ready"
-    }
-
     var body: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(connectionColor)
-                    .frame(width: 6, height: 6)
-                Text(connectionLabel)
-                    .font(.system(size: 11))
-                    .foregroundColor(colors.subtleText)
-            }
+        HStack(spacing: DesignTokens.Spacing.md) {
+            // Left: model status
+            Text("● Local Model Active")
+                .font(.system(size: 12))
+                .foregroundColor(colors.success)
 
             Spacer()
 
-            Text("Model: \(appState.settings.model.modelName)")
-                .font(.system(size: 11))
+            // Center: model name
+            Text("模型: \(appState.settings.model.modelName)")
+                .font(.system(size: 12))
                 .foregroundColor(colors.subtleText)
 
             Spacer()
 
-            Text("Logs: \(appState.logsPath)")
-                .font(.system(size: 11))
+            // Right: logs path
+            Text("Logs: \(logsPath)")
+                .font(.system(size: 12))
                 .foregroundColor(colors.subtleText)
                 .lineLimit(1)
-                .truncationMode(.middle)
-                .help(appState.logsPath)
+                .truncationMode(.tail)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, DesignTokens.Spacing.xxl)
         .padding(.vertical, 10)
-        .frame(height: LayoutMetrics.statusBarHeight)
         .background(colors.chrome)
         .overlay(
             Rectangle()
-                .fill(colors.border.opacity(0.6))
+                .fill(colors.border)
                 .frame(height: 1),
             alignment: .top
         )
+    }
+
+    private var logsPath: String {
+        appState.logsPath
     }
 }

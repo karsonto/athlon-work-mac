@@ -10,6 +10,9 @@ struct ComposerView: View {
     @State private var showAtCompletion: Bool = false
     @State private var atFilterText: String = ""
     @State private var atSelectedIndex: Int = 0
+    @State private var showSlashCompletion: Bool = false
+    @State private var slashSelectedIndex: Int = 0
+    @State private var slashFilterText: String = ""
     @State private var textAreaHeight: CGFloat = LayoutMetrics.composerTextMinHeight
 
     private var colors: ThemeColors {
@@ -40,10 +43,25 @@ struct ComposerView: View {
         return items.prefix(30).map { $0 }
     }
 
+    private var slashCompletionItems: [SlashCompletionItem] {
+        let commands: [SlashCompletionItem] = [
+            SlashCompletionItem(name: "compact", description: "压缩当前会话上下文"),
+            SlashCompletionItem(name: "help", description: "显示可用命令列表"),
+        ]
+        if slashFilterText.isEmpty {
+            return commands
+        }
+        return commands.filter { $0.name.localizedCaseInsensitiveContains(slashFilterText) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if showAtCompletion && !atCompletionItems.isEmpty {
                 atCompletionPopup
+            }
+
+            if showSlashCompletion && !slashCompletionItems.isEmpty {
+                slashCompletionPopup
             }
 
             HStack {
@@ -57,6 +75,7 @@ struct ComposerView: View {
         }
         .onChange(of: messageText) { _, newValue in
             handleAtTrigger(newValue)
+            handleSlashTrigger(newValue)
         }
     }
 
@@ -140,6 +159,13 @@ struct ComposerView: View {
                 .disabled(!canSend)
                 .help("发送消息 (Enter)")
             }
+
+            // Composer hint
+            Text("Enter 发送 · Shift+Enter 换行 · Cmd+V 粘贴图片 · @ 引用文件 · / 命令")
+                .font(.system(size: 10))
+                .foregroundColor(colors.disabledText)
+                .padding(.horizontal, DesignTokens.Spacing.xs)
+                .padding(.top, DesignTokens.Spacing.xs)
         }
         .padding(.horizontal, LayoutMetrics.composerInnerPaddingHorizontal)
         .padding(.vertical, LayoutMetrics.composerInnerPaddingVertical)
@@ -196,6 +222,19 @@ struct ComposerView: View {
         .padding(.horizontal, LayoutMetrics.composerOuterPaddingHorizontal)
     }
 
+    private var slashCompletionPopup: some View {
+        SlashCompletionPopover(
+            items: slashCompletionItems,
+            selectedIndex: slashSelectedIndex,
+            onSelect: { item in
+                applySlashCompletion(item)
+            },
+            colors: colors
+        )
+        .padding(.horizontal, DesignTokens.Spacing.md)
+        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+    }
+
     private var imageAttachmentsRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -230,6 +269,19 @@ struct ComposerView: View {
         atFilterText = ""
     }
 
+    private func handleSlashTrigger(_ text: String) {
+        // Only trigger if text starts with / and has no spaces yet
+        if text.hasPrefix("/") && !text.contains(" ") {
+            let afterSlash = String(text.dropFirst())
+            slashFilterText = afterSlash
+            slashSelectedIndex = 0
+            showSlashCompletion = true
+        } else {
+            showSlashCompletion = false
+            slashFilterText = ""
+        }
+    }
+
     private func insertAtCompletion(at index: Int) {
         guard index < atCompletionItems.count else { return }
         let item = atCompletionItems[index]
@@ -240,6 +292,15 @@ struct ComposerView: View {
         }
         showAtCompletion = false
         atFilterText = ""
+    }
+
+    private func applySlashCompletion(_ item: SlashCompletionItem) {
+        // Find the "/" at the start of the message or after a newline
+        if let slashRange = messageText.range(of: "/[^\\s]*$", options: .regularExpression) {
+            messageText.replaceSubrange(slashRange, with: "/\(item.name) ")
+        }
+        showSlashCompletion = false
+        slashFilterText = ""
     }
 
     private func sendMessage() {

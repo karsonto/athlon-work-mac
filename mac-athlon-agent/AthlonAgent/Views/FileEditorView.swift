@@ -1,11 +1,9 @@
+// AthlonAgent/Views/FileEditorView.swift
 import SwiftUI
 
-// MARK: - File Editor View
 struct FileEditorView: View {
     @EnvironmentObject var appState: AppState
-    @State private var fileContent: String = ""
-    @State private var loadError: String?
-    @State private var saveError: String?
+    @StateObject private var viewModel = FileEditorViewModel(appState: AppState())
 
     private var colors: ThemeColors {
         appState.theme == .dark ? .dark : .light
@@ -13,86 +11,137 @@ struct FileEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Button("← 聊天") {
-                    appState.currentPage = .chat
+            // Tab bar
+            if viewModel.hasOpenTabs {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(viewModel.tabs) { doc in
+                            EditorTabItem(
+                                doc: doc,
+                                isActive: viewModel.activeDocument?.id == doc.id,
+                                colors: colors,
+                                onSelect: { viewModel.activeDocument = doc },
+                                onClose: { viewModel.closeTab(doc) }
+                            )
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundColor(colors.accent)
+                .frame(height: 36)
+                .background(colors.panelAlt)
 
-                Spacer()
+                Divider().background(colors.border)
+            }
 
-                Text(appState.editingFilePath ?? "文件编辑器")
-                    .font(.system(size: 13, weight: .semibold))
+            // Editor content
+            if let doc = viewModel.activeDocument {
+                VStack(spacing: 0) {
+                    // File path header
+                    HStack {
+                        Text(doc.displayName)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(colors.subtleText)
+                        if doc.isDirty {
+                            Text("• 未保存")
+                                .font(.system(size: 11))
+                                .foregroundColor(.orange)
+                        }
+                        if doc.isReadOnly {
+                            Text("(只读)")
+                                .font(.system(size: 11))
+                                .foregroundColor(colors.subtleText)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, DesignTokens.Spacing.md)
+                    .padding(.vertical, DesignTokens.Spacing.xs)
+                    .background(colors.panel)
+
+                    Divider().background(colors.border)
+
+                    // Text editor
+                    TextEditor(text: Binding(
+                        get: { doc.content },
+                        set: { doc.onContentChanged($0) }
+                    ))
+                    .font(.system(size: 13, design: .monospaced))
                     .foregroundColor(colors.text)
-                    .lineLimit(1)
-
-                Spacer()
-
-                Button("保存") {
-                    saveFile()
+                    .scrollContentBackground(.hidden)
+                    .background(colors.appBackground)
+                    .disabled(doc.isReadOnly)
                 }
-                .buttonStyle(.plain)
+            } else {
+                VStack(spacing: DesignTokens.Spacing.md) {
+                    Spacer()
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 32))
+                        .foregroundColor(colors.subtleText)
+                    Text("无打开的文件")
+                        .font(.system(size: 13))
+                        .foregroundColor(colors.subtleText)
+                    Text("从侧栏工作区树双击文件打开")
+                        .font(.system(size: 11))
+                        .foregroundColor(colors.disabledText)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            // Bottom toolbar
+            if viewModel.hasOpenTabs {
+                HStack {
+                    Spacer()
+                    Button(action: {
+                        if let doc = viewModel.activeDocument {
+                            Task { await viewModel.saveDocument(doc) }
+                        }
+                    }) {
+                        Label("保存 (Cmd+S)", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 11))
+                    }
+                    .disabled(viewModel.activeDocument == nil || viewModel.activeDocument?.isReadOnly == true)
+                    .keyboardShortcut("s", modifiers: .command)
+                }
+                .padding(.horizontal, DesignTokens.Spacing.md)
+                .padding(.vertical, DesignTokens.Spacing.xs)
+                .background(colors.panel)
+            }
+        }
+    }
+}
+
+private struct EditorTabItem: View {
+    @ObservedObject var doc: EditorDocumentViewModel
+    let isActive: Bool
+    let colors: ThemeColors
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: DesignTokens.Spacing.xs) {
+            if doc.isDirty {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 8, height: 8)
+            }
+            Text(doc.displayName)
                 .font(.system(size: 12))
-                .foregroundColor(colors.accent)
+                .foregroundColor(isActive ? colors.text : colors.subtleText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 160)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(colors.subtleText)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .frame(height: LayoutMetrics.splitPaneHeaderHeight)
-            .background(colors.panel)
-            .overlay(
-                Rectangle().fill(colors.border).frame(height: 1),
-                alignment: .bottom
-            )
-
-            if let loadError {
-                Text(loadError)
-                    .font(.system(size: 12))
-                    .foregroundColor(colors.toolFailureText)
-                    .padding(12)
-            }
-
-            if let saveError {
-                Text(saveError)
-                    .font(.system(size: 12))
-                    .foregroundColor(colors.toolFailureText)
-                    .padding(.horizontal, 12)
-            }
-
-            TextEditor(text: $fileContent)
-                .font(.system(size: 13, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .padding(16)
-                .background(colors.appBackground)
+            .buttonStyle(.plain)
+            .padding(.horizontal, 2)
         }
-        .background(colors.appBackground)
-        .onAppear { loadFile() }
-        .onChange(of: appState.editingFilePath) { _, _ in loadFile() }
-    }
-
-    private func loadFile() {
-        loadError = nil
-        saveError = nil
-        guard let path = appState.editingFilePath else {
-            fileContent = ""
-            return
-        }
-        if let content = appState.workspaceService.readFileContent(path: path) {
-            fileContent = content
-        } else {
-            loadError = "无法读取文件: \(path)"
-            fileContent = ""
-        }
-    }
-
-    private func saveFile() {
-        saveError = nil
-        guard let path = appState.editingFilePath else { return }
-        do {
-            try appState.workspaceService.writeFileContent(path: path, content: fileContent)
-        } catch {
-            saveError = "保存失败: \(error.localizedDescription)"
-        }
+        .padding(.horizontal, DesignTokens.Spacing.md)
+        .padding(.vertical, DesignTokens.Spacing.xs)
+        .background(isActive ? colors.panel : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect() }
     }
 }

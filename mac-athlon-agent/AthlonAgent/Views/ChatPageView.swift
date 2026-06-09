@@ -45,7 +45,23 @@ private struct ChatMessagesArea: View {
                 messageList
                     .opacity(hasMessages ? 1 : 0)
                     .allowsHitTesting(hasMessages)
+
+                // Copy notice toast
+                if appState.isCopyNoticeVisible {
+                    VStack {
+                        Spacer()
+                        Text(appState.copyNotice)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, DesignTokens.Spacing.lg)
+                            .padding(.vertical, DesignTokens.Spacing.sm)
+                            .background(Color.black.opacity(0.8))
+                            .cornerRadius(DesignTokens.Radius.md)
+                            .padding(.bottom, DesignTokens.Spacing.xl)
+                    }
+                }
             }
+            .animation(.easeInOut(duration: DesignTokens.Duration.normal), value: appState.isCopyNoticeVisible)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

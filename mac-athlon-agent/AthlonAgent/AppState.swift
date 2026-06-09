@@ -106,6 +106,12 @@ final class AppState: ObservableObject {
         AppPathProvider.shared.logsPath
     }
 
+    // MARK: - ViewModels
+    /// Lazily created FileEditorViewModel. Created on first access.
+    lazy var fileEditorViewModel: FileEditorViewModel = {
+        FileEditorViewModel(appState: self)
+    }()
+
     // MARK: - Computed Properties
     var activeSessionTitle: String {
         guard let id = activeSessionId,
