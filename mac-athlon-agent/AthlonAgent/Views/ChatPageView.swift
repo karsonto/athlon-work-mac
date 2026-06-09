@@ -22,6 +22,7 @@ struct ChatPageView: View {
 // MARK: - Messages (observes AppState)
 private struct ChatMessagesArea: View {
     @EnvironmentObject var appState: AppState
+    @State private var scrollDebounceTask: Task<Void, Never>?
 
     private var colors: ThemeColors {
         appState.theme == .dark ? .dark : .light
@@ -147,14 +148,23 @@ private struct ChatMessagesArea: View {
                 .padding(.top, LayoutMetrics.chatScrollPaddingTop)
                 .padding(.bottom, LayoutMetrics.chatScrollPaddingBottom)
             }
-            .onChange(of: appState.activeMessages.count) {
+            .onChange(of: appState.activeMessages.count) { _, _ in
+                scrollDebounceTask?.cancel()
+                let proxy = scrollProxy
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    guard let lastId = chatDisplayMessages.last?.id else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(lastId, anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: appState.activeMessages.last?.content) { _, _ in
                 scrollToBottom(scrollProxy)
             }
-            .onChange(of: appState.activeMessages.last?.content) {
-                scrollToBottom(scrollProxy)
-            }
-            .onChange(of: appState.isBusy) {
-                scrollToBottom(scrollProxy)
+            .onChange(of: appState.isBusy) { _, newValue in
+                if !newValue {
+                    scrollToBottom(scrollProxy, immediate: true)
+                }
             }
         }
     }
@@ -185,10 +195,24 @@ private struct ChatMessagesArea: View {
             && (message.isStreaming || message.hasReasoning || message.hasDisplayContent)
     }
 
-    private func scrollToBottom(_ scrollProxy: ScrollViewProxy) {
+    private func scrollToBottom(_ scrollProxy: ScrollViewProxy, immediate: Bool = false) {
         guard let lastId = chatDisplayMessages.last?.id else { return }
-        withAnimation(.easeOut(duration: 0.2)) {
+
+        if immediate {
+            scrollDebounceTask?.cancel()
             scrollProxy.scrollTo(lastId, anchor: .bottom)
+            return
+        }
+
+        scrollDebounceTask?.cancel()
+        scrollDebounceTask = Task {
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms debounce
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    scrollProxy.scrollTo(lastId, anchor: .bottom)
+                }
+            }
         }
     }
 }
