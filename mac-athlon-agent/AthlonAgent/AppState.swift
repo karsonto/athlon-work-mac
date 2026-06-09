@@ -84,6 +84,9 @@ final class AppState: ObservableObject {
     private(set) var workspaceService: WorkspaceService!
     private(set) var imageAttachmentService: ImageAttachmentService!
     private(set) var sessionTurnHost: SessionTurnHost!
+
+    // MARK: - File System Watcher
+    private var workspaceWatcher: WorkspaceFileWatcherService?
     private let executeCommandRegistry = ExecuteCommandProcessRegistry()
 
     // MARK: - Memory System
@@ -176,6 +179,12 @@ final class AppState: ObservableObject {
         skillService.reload(savedSettings: settings.skills)
         workspaceService = WorkspaceService(ignorePatterns: settings.workspaceIgnore.directoryNames)
         imageAttachmentService = ImageAttachmentService()
+
+        // Initialize workspace file watcher — notifies FileEditorViewModel of external changes
+        workspaceWatcher = WorkspaceFileWatcherService { [weak self] changedPath in
+            guard let self else { return }
+            self.fileEditorViewModel.handleExternalChange(changedPath)
+        }
         configureMemorySystem()
 
         agentRuntime = AgentRuntimeService(
@@ -1304,6 +1313,9 @@ final class AppState: ObservableObject {
         activeWorkspace = path
         activeWorkspaceName = (path as NSString).lastPathComponent
         mcpClientService.refreshConnections(settings: settings.mcpServers, workspaceRoot: path)
+
+        // Start/restart file system watcher for the new workspace root
+        workspaceWatcher?.watchDirectory(path: path)
         if let id = activeSessionId {
             sessionManager.updateSession(id) { session in
                 session.activeWorkspace = path
@@ -1341,6 +1353,9 @@ final class AppState: ObservableObject {
         shutdownStatusText = "正在保存设置…"
         saveSettings()
         persistUiSettingsDebounced()
+
+        shutdownStatusText = "正在关闭文件监听…"
+        workspaceWatcher?.stop()
 
         shutdownStatusText = "正在关闭 MCP 连接…"
         workspaceService.stopMonitoring()
