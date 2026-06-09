@@ -92,8 +92,9 @@ IMPORTANT:
             if message.role == .system || message.role == .compaction { continue }
             result += "[\(message.role.apiValue)]: \(message.content)\n\n"
         }
-        if result.count > 80_000 {
-            result = String(result.suffix(80_000))
+        let maxChars = settings.maxFlushConversationChars
+        if result.count > maxChars {
+            result = String(result.suffix(maxChars))
         }
         return result
     }

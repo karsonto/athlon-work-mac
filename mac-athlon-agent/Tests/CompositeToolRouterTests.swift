@@ -31,11 +31,10 @@ private final class MockMcpRegistry: McpRegistryProviding {
 
 final class CompositeToolRouterTests: XCTestCase {
     func testListToolDefinitions_includesLocalAndMcpSorted() async {
-        let router = BuiltInTools.makeAll(
+        let (router, _) = BuiltInTools.makeAll(
             workspaceService: WorkspaceService(),
             settings: .default,
             skillService: SkillService(),
-            sessionContext: DefaultAgentSessionContext(),
             mcpRegistry: MockMcpRegistry(),
             executeCommandRegistry: ExecuteCommandProcessRegistry()
         )

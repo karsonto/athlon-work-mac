@@ -4,6 +4,7 @@ struct AgentTurnCallbacks {
     var onSessionUpdated: (@Sendable (AgentSession) async -> Void)?
     var onMessage: (@Sendable (ChatMessage) async -> Void)?
     var onToolStarted: (@Sendable (AgentToolCall) async -> Void)?
+    var onStreamEvent: (@Sendable (AgentStreamEvent) async -> Void)?
     /// Fired before each model completion so UI streaming targets the correct assistant message id.
     var onStreamingAssistantTarget: (@Sendable (String) async -> Void)?
     var onAssistantTextDelta: (@Sendable (String) async -> Void)?
@@ -19,6 +20,7 @@ final class AgentRuntime: @unchecked Sendable {
     private let systemPromptOrchestrator: SystemPromptOrchestrator
     private let preCompletionPipeline: PreCompletionPipeline
     private let toolResultEvictor: ToolResultEvictor
+    private let tokenEstimatorCalibrator: TokenEstimatorCalibrating
     private let settings: AppSettings
     private let skillsProvider: () -> [AvailableSkillInfo]
     private let longTermMemory: ILongTermMemory?
@@ -32,6 +34,7 @@ final class AgentRuntime: @unchecked Sendable {
         systemPromptOrchestrator: SystemPromptOrchestrator,
         preCompletionPipeline: PreCompletionPipeline,
         toolResultEvictor: ToolResultEvictor,
+        tokenEstimatorCalibrator: TokenEstimatorCalibrating,
         skillsProvider: @escaping () -> [AvailableSkillInfo],
         longTermMemory: ILongTermMemory? = nil,
         postTurnMemoryProcessor: IPostTurnMemoryProcessor? = nil
@@ -43,6 +46,7 @@ final class AgentRuntime: @unchecked Sendable {
         self.systemPromptOrchestrator = systemPromptOrchestrator
         self.preCompletionPipeline = preCompletionPipeline
         self.toolResultEvictor = toolResultEvictor
+        self.tokenEstimatorCalibrator = tokenEstimatorCalibrator
         self.skillsProvider = skillsProvider
         self.longTermMemory = longTermMemory
         self.postTurnMemoryProcessor = postTurnMemoryProcessor
@@ -62,12 +66,25 @@ final class AgentRuntime: @unchecked Sendable {
             modelClient: modelClient,
             storage: storage
         )
-        let pipeline = PreCompletionPipeline(conversationCompactor: compactor)
+        let calibrator = TokenEstimatorCalibrator(settings: settings)
+        let pipeline = PreCompletionPipeline(
+            conversationCompactor: compactor,
+            settings: settings.contextCompaction
+        )
         let evictor = ToolResultEvictor(settings: settings.contextCompaction, storage: storage)
-        var orchestrator = SystemPromptOrchestrator(settings: settings)
+        var orchestrator = SystemPromptOrchestrator(
+            settings: settings,
+            sections: [
+                SubAgentDelegationSection(settings: settings),
+                SubAgentPersonaSection(),
+                EncodingPolicySection(),
+                WorkspaceFilesSection(),
+                SkillsSection(skillsProvider: skillsProvider)
+            ]
+        )
         if let longTermMemory {
             orchestrator.postProcessPrompt = { prompt in
-                _ = MemoryPromptContributor(longTermMemory: longTermMemory).append(to: &prompt)
+                _ = await MemoryPromptContributor(longTermMemory: longTermMemory).append(to: &prompt)
             }
         }
         return AgentRuntime(
@@ -78,6 +95,7 @@ final class AgentRuntime: @unchecked Sendable {
             systemPromptOrchestrator: orchestrator,
             preCompletionPipeline: pipeline,
             toolResultEvictor: evictor,
+            tokenEstimatorCalibrator: calibrator,
             skillsProvider: skillsProvider,
             longTermMemory: longTermMemory,
             postTurnMemoryProcessor: postTurnMemoryProcessor
@@ -97,23 +115,26 @@ final class AgentRuntime: @unchecked Sendable {
 
         var workingSession = session
 
-        let allTools = await toolRouter.listToolDefinitions()
-        let tools = PlanToolCatalog.filterForSession(
-            allTools,
-            mode: workingSession.interactionMode,
-            plan: workingSession.plan
-        )
-        let frozenPrompt = systemPromptOrchestrator.prepareForTurn(
+        let activeRouter = resolveToolRouter()
+        let activePrompt = resolvePromptOrchestrator()
+        let tools = await activeRouter.listToolDefinitions()
+        let frozenPrompt = activePrompt.prepareForTurn(
             session: workingSession,
-            tools: tools,
-            skills: skillsProvider()
+            tools: tools
         )
+
+        var modelToolRound = 0
+        let maxModelToolRounds = AgentLoopOptionsScope.current?.maxModelToolRounds
 
         /// One assistant message id for the entire user turn (WPF: single streaming assistant per turn).
         let turnAssistantId: String = {
             if let assistantMessageId, !assistantMessageId.isEmpty { return assistantMessageId }
             return UUID().uuidString
         }()
+
+        let runId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let streamAdapter = AgentStreamAdapter(sessionId: workingSession.id, runId: runId)
+        await publishStreamEvents(callbacks, streamAdapter.createRunStarted())
 
         if Self.shouldListWorkspaceFiles(userMessage.content),
            tools.contains(where: { $0.name.caseInsensitiveCompare("file_list") == .orderedSame }) {
@@ -131,27 +152,36 @@ final class AgentRuntime: @unchecked Sendable {
                 session: workingSession,
                 parentMessageId: userMessage.id,
                 toolCall: toolCall,
+                streamAdapter: streamAdapter,
                 callbacks: callbacks
             )
         }
 
         while true {
             try Task.checkCancellation()
+
+            var environmentPrompt = await activePrompt.buildForReasoningIteration(
+                frozen: frozenPrompt,
+                session: workingSession,
+                tools: tools
+            )
             workingSession = await runPreCompletionPipeline(
                 session: workingSession,
                 callbacks: callbacks,
-                options: .agentLoop
+                options: .agentLoop,
+                environmentPrompt: environmentPrompt,
+                tools: tools
+            )
+            environmentPrompt = await activePrompt.buildForReasoningIteration(
+                frozen: frozenPrompt,
+                session: workingSession,
+                tools: tools
             )
 
             if let onTarget = callbacks?.onStreamingAssistantTarget {
                 await onTarget(turnAssistantId)
             }
 
-            let environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
-                frozen: frozenPrompt,
-                session: workingSession,
-                tools: tools
-            )
             let modelMessages = Self.buildModelMessages(
                 environmentPrompt: environmentPrompt,
                 history: workingSession.messages,
@@ -161,15 +191,32 @@ final class AgentRuntime: @unchecked Sendable {
             let completion = try await completeWithOverflowRetry(
                 session: workingSession,
                 callbacks: callbacks,
+                streamAdapter: streamAdapter,
+                assistantMessageId: turnAssistantId,
                 modelMessages: modelMessages,
                 tools: tools,
-                frozenPrompt: frozenPrompt
+                frozenPrompt: frozenPrompt,
+                environmentPrompt: environmentPrompt
             )
             workingSession = completion.session
             let response = completion.response
-            await emitFinalStreamingSnapshot(response: response, callbacks: callbacks)
 
             if response.toolCalls.isEmpty {
+                if !streamAdapter.state.hasStartedTextMessage(turnAssistantId),
+                   !response.content.isEmpty {
+                    await publishStreamEvents(
+                        callbacks,
+                        streamAdapter.onTextDelta(messageId: turnAssistantId, delta: response.content)
+                    )
+                }
+                if !streamAdapter.state.hasStartedReasoningMessage(turnAssistantId),
+                   let reasoning = response.reasoningContent,
+                   !reasoning.isEmpty {
+                    await publishStreamEvents(
+                        callbacks,
+                        streamAdapter.onReasoningDelta(messageId: turnAssistantId, delta: reasoning)
+                    )
+                }
                 let assistant = ChatMessage(
                     id: turnAssistantId,
                     role: .assistant,
@@ -182,13 +229,14 @@ final class AgentRuntime: @unchecked Sendable {
                 if let onMessage = callbacks?.onMessage {
                     await onMessage(assistant)
                 }
+                await publishStreamEvents(callbacks, streamAdapter.finishRun())
                 try? await storage.saveSession(workingSession)
                 // Fire-and-forget: flush turn messages to daily memory ledger
                 if let processor = postTurnMemoryProcessor {
                     Task {
                         let recentCount = min(workingSession.messages.count, 20)
                         let turnMessages = Array(workingSession.messages.suffix(recentCount))
-                        _ = await processor.processTurn(messages: turnMessages)
+                        _ = try? await processor.processTurn(messages: turnMessages)
                     }
                 }
                 return workingSession
@@ -207,6 +255,10 @@ final class AgentRuntime: @unchecked Sendable {
             if let onMessage = callbacks?.onMessage {
                 await onMessage(assistantWithToolCalls)
             }
+            await publishStreamEvents(
+                callbacks,
+                streamAdapter.onAssistantRoundCompleted(assistantWithToolCalls)
+            )
 
             for toolCall in response.toolCalls {
                 if let onToolStarted = callbacks?.onToolStarted {
@@ -216,27 +268,72 @@ final class AgentRuntime: @unchecked Sendable {
                     session: workingSession,
                     parentMessageId: userMessage.id,
                     toolCall: toolCall,
+                    streamAdapter: streamAdapter,
                     callbacks: callbacks
                 )
             }
-        }
 
-        try? await storage.saveSession(workingSession)
+            modelToolRound += 1
+            if let maxModelToolRounds, maxModelToolRounds > 0, modelToolRound >= maxModelToolRounds {
+                let notice = ChatMessage(
+                    id: turnAssistantId,
+                    role: .assistant,
+                    content: "(Sub-agent reached the maximum tool round limit of \(maxModelToolRounds).)",
+                    createdAt: Date(),
+                    parentMessageId: userMessage.id
+                )
+                workingSession = workingSession.withMessage(notice)
+                await persistMessage(session: workingSession, message: notice)
+                if let onMessage = callbacks?.onMessage {
+                    await onMessage(notice)
+                }
+                await publishStreamEvents(callbacks, streamAdapter.finishRun())
+                try? await storage.saveSession(workingSession)
+                return workingSession
+            }
+        }
     }
 
     private func completeWithOverflowRetry(
         session: AgentSession,
         callbacks: AgentTurnCallbacks?,
+        streamAdapter: AgentStreamAdapter,
+        assistantMessageId: String,
         modelMessages: [AgentModelMessage],
         tools: [ToolDefinition],
-        frozenPrompt: FrozenSystemPrompt
+        frozenPrompt: FrozenSystemPrompt,
+        environmentPrompt: String
     ) async throws -> (session: AgentSession, response: AgentModelResponse) {
         do {
             let response = try await modelClient.completeChat(
                 AgentModelRequest(messages: modelMessages, tools: tools),
-                onTextDelta: callbacks?.onAssistantTextDelta,
-                onReasoningDelta: callbacks?.onAssistantReasoningDelta,
-                onToolCallDelta: callbacks?.onAssistantToolCallDelta
+                onTextDelta: { [weak self] delta in
+                    guard let self else { return }
+                    await self.publishStreamEvents(
+                        callbacks,
+                        streamAdapter.onTextDelta(messageId: assistantMessageId, delta: delta)
+                    )
+                },
+                onReasoningDelta: { [weak self] delta in
+                    guard let self else { return }
+                    await self.publishStreamEvents(
+                        callbacks,
+                        streamAdapter.onReasoningDelta(messageId: assistantMessageId, delta: delta)
+                    )
+                },
+                onToolCallDelta: { [weak self] delta in
+                    guard let self else { return }
+                    await self.publishStreamEvents(
+                        callbacks,
+                        streamAdapter.onToolCallDelta(messageId: assistantMessageId, delta: delta)
+                    )
+                }
+            )
+            observeModelUsage(
+                session: session,
+                environmentPrompt: environmentPrompt,
+                tools: tools,
+                response: response
             )
             SessionHttpLogService.log(
                 sessionId: session.id,
@@ -255,66 +352,142 @@ final class AgentRuntime: @unchecked Sendable {
         } catch let error as OpenAiModelClientError {
             if case .contextLengthExceeded = error {
                 return try await retryWithCompaction(
-                    session: session, callbacks: callbacks,
-                    frozenPrompt: frozenPrompt, tools: tools
+                    session: session,
+                    callbacks: callbacks,
+                    streamAdapter: streamAdapter,
+                    assistantMessageId: assistantMessageId,
+                    frozenPrompt: frozenPrompt,
+                    tools: tools,
+                    environmentPrompt: environmentPrompt
                 )
             }
             throw error
         } catch {
             if Self.isContextLengthError(error) {
                 return try await retryWithCompaction(
-                    session: session, callbacks: callbacks,
-                    frozenPrompt: frozenPrompt, tools: tools
+                    session: session,
+                    callbacks: callbacks,
+                    streamAdapter: streamAdapter,
+                    assistantMessageId: assistantMessageId,
+                    frozenPrompt: frozenPrompt,
+                    tools: tools,
+                    environmentPrompt: environmentPrompt
                 )
             }
             throw error
         }
     }
 
+    private func observeModelUsage(
+        session: AgentSession,
+        environmentPrompt: String,
+        tools: [ToolDefinition],
+        response: AgentModelResponse
+    ) {
+        guard let promptTokens = response.usage?.promptTokens, promptTokens > 0 else { return }
+        let multiplier = tokenEstimatorCalibrator.getMultiplier(sessionId: session.id)
+        let budget = ContextBudgetCalculator.compute(
+            environmentPrompt: environmentPrompt,
+            tools: tools,
+            messages: session.messages,
+            compactionSettings: settings.contextCompaction,
+            modelSettings: settings.model,
+            calibrationMultiplier: multiplier
+        )
+        let estimatedPromptTokens = budget.fixedOverhead + budget.estimatedHistory
+        tokenEstimatorCalibrator.observe(
+            sessionId: session.id,
+            estimatedPromptTokens: estimatedPromptTokens,
+            actualPromptTokens: promptTokens
+        )
+    }
+
     /// Runs forced compaction and retries the model completion.
     private func retryWithCompaction(
         session: AgentSession,
         callbacks: AgentTurnCallbacks?,
+        streamAdapter: AgentStreamAdapter,
+        assistantMessageId: String,
         frozenPrompt: FrozenSystemPrompt,
-        tools: [ToolDefinition]
+        tools: [ToolDefinition],
+        environmentPrompt: String
     ) async throws -> (session: AgentSession, response: AgentModelResponse) {
         let updated = await runPreCompletionPipeline(
             session: session,
             callbacks: callbacks,
-            options: .forceCompact
+            options: .forceCompact,
+            environmentPrompt: environmentPrompt,
+            tools: tools,
+            pressureOverride: .overflow
         )
-        let environmentPrompt = systemPromptOrchestrator.buildForReasoningIteration(
+        let refreshedPrompt = await resolvePromptOrchestrator().buildForReasoningIteration(
             frozen: frozenPrompt,
             session: updated,
             tools: tools
         )
         let retryMessages = Self.buildModelMessages(
-            environmentPrompt: environmentPrompt,
+            environmentPrompt: refreshedPrompt,
             history: updated.messages,
             includeReasoningInModelContext: Self.shouldIncludeReasoningInModelContext(settings: settings)
         )
         let response = try await modelClient.completeChat(
             AgentModelRequest(messages: retryMessages, tools: tools),
-            onTextDelta: callbacks?.onAssistantTextDelta,
-            onReasoningDelta: callbacks?.onAssistantReasoningDelta,
-            onToolCallDelta: callbacks?.onAssistantToolCallDelta
+            onTextDelta: { [weak self] delta in
+                guard let self else { return }
+                await self.publishStreamEvents(
+                    callbacks,
+                    streamAdapter.onTextDelta(messageId: assistantMessageId, delta: delta)
+                )
+            },
+            onReasoningDelta: { [weak self] delta in
+                guard let self else { return }
+                await self.publishStreamEvents(
+                    callbacks,
+                    streamAdapter.onReasoningDelta(messageId: assistantMessageId, delta: delta)
+                )
+            },
+            onToolCallDelta: { [weak self] delta in
+                guard let self else { return }
+                await self.publishStreamEvents(
+                    callbacks,
+                    streamAdapter.onToolCallDelta(messageId: assistantMessageId, delta: delta)
+                )
+            }
+        )
+        observeModelUsage(
+            session: updated,
+            environmentPrompt: refreshedPrompt,
+            tools: tools,
+            response: response
         )
         return (updated, response)
     }
 
-    /// Pushes the normalized completion to UI callbacks (DeepSeek often streams reasoning only; answer appears after normalize).
-    private func emitFinalStreamingSnapshot(
-        response: AgentModelResponse,
-        callbacks: AgentTurnCallbacks?
+    private func publishStreamEvents(
+        _ callbacks: AgentTurnCallbacks?,
+        _ events: [AgentStreamEvent]
     ) async {
-        let trimmedContent = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedContent.isEmpty, let onText = callbacks?.onAssistantTextDelta {
-            await onText(response.content)
-        }
-        if let reasoning = response.reasoningContent,
-           !reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let onReasoning = callbacks?.onAssistantReasoningDelta {
-            await onReasoning(reasoning)
+        guard let callbacks, !events.isEmpty else { return }
+        for event in events {
+            if let onStreamEvent = callbacks.onStreamEvent {
+                await onStreamEvent(event)
+            }
+            switch event {
+            case .textMessageContent(_, let delta):
+                if let onText = callbacks.onAssistantTextDelta {
+                    await onText(delta)
+                }
+            case .reasoningMessageContent(_, let delta):
+                if let onReasoning = callbacks.onAssistantReasoningDelta {
+                    await onReasoning(delta)
+                }
+            case .textMessageStart(let messageId, _):
+                if let onTarget = callbacks.onStreamingAssistantTarget {
+                    await onTarget(messageId)
+                }
+            default:
+                break
+            }
         }
     }
 
@@ -332,13 +505,14 @@ final class AgentRuntime: @unchecked Sendable {
             }
             return settings.toolPermissions.askBeforeEveryCommand
         }
-        return toolRouter.requiresApproval(toolName: toolName)
+        return resolveToolRouter().requiresApproval(toolName: toolName)
     }
 
     private func invokeToolAndPersist(
         session: AgentSession,
         parentMessageId: String?,
         toolCall: AgentToolCall,
+        streamAdapter: AgentStreamAdapter,
         callbacks: AgentTurnCallbacks?
     ) async throws -> AgentSession {
         try Task.checkCancellation()
@@ -379,13 +553,14 @@ final class AgentRuntime: @unchecked Sendable {
                         toolCall: toolCall,
                         result: result,
                         displayNotes: displayNotes,
+                        streamAdapter: streamAdapter,
                         callbacks: callbacks
                     )
                 }
                 AuditLogService.log(action: "tool.approved", detail: ["tool": toolCall.name])
             }
 
-            let output = try await toolRouter.invoke(toolName: toolCall.name, arguments: args)
+            let output = try await resolveToolRouter().invoke(toolName: toolCall.name, arguments: args)
             result = .success(summary: "Tool completed", content: output)
         } catch {
             result = .failure(summary: "Tool invocation failed", error: error.localizedDescription)
@@ -396,6 +571,7 @@ final class AgentRuntime: @unchecked Sendable {
             toolCall: toolCall,
             result: result,
             displayNotes: displayNotes,
+            streamAdapter: streamAdapter,
             callbacks: callbacks,
             started: started
         )
@@ -407,6 +583,7 @@ final class AgentRuntime: @unchecked Sendable {
         toolCall: AgentToolCall,
         result: ToolResult,
         displayNotes: ToolExecutionDisplayNotes? = nil,
+        streamAdapter: AgentStreamAdapter,
         callbacks: AgentTurnCallbacks?,
         started: Date = Date()
     ) async throws -> AgentSession {
@@ -439,6 +616,10 @@ final class AgentRuntime: @unchecked Sendable {
             toolCallId: toolCall.id
         )
         let updated = session.withMessage(toolMessage)
+        await publishStreamEvents(
+            callbacks,
+            streamAdapter.onToolResult(toolMessage: toolMessage, toolCall: toolCall)
+        )
         if let onMessage = callbacks?.onMessage {
             await onMessage(toolMessage)
         }
@@ -449,10 +630,36 @@ final class AgentRuntime: @unchecked Sendable {
     private func runPreCompletionPipeline(
         session: AgentSession,
         callbacks: AgentTurnCallbacks?,
-        options: PreCompletionOptions
+        options: PreCompletionOptions,
+        environmentPrompt: String = "",
+        tools: [ToolDefinition] = [],
+        pressureOverride: ContextPressureLevel = .normal
     ) async -> AgentSession {
         let idsBefore = Set(session.messages.map(\.id))
-        let compacted = await preCompletionPipeline.run(session: session, options: options)
+        var runtimeContext: CompactionRuntimeContext?
+        if settings.contextCompaction.dynamicCompaction.enabled, !environmentPrompt.isEmpty {
+            let multiplier = tokenEstimatorCalibrator.getMultiplier(sessionId: session.id)
+            let budget = ContextBudgetCalculator.compute(
+                environmentPrompt: environmentPrompt,
+                tools: tools,
+                messages: session.messages,
+                compactionSettings: settings.contextCompaction,
+                modelSettings: settings.model,
+                calibrationMultiplier: multiplier
+            )
+            runtimeContext = CompactionRuntimeContext(
+                budget: budget,
+                environmentPrompt: environmentPrompt,
+                tools: tools,
+                calibrationMultiplier: multiplier,
+                pressureOverride: pressureOverride
+            )
+        }
+        let compacted = await preCompletionPipeline.run(
+            session: session,
+            options: options,
+            runtimeContext: runtimeContext
+        )
         return await persistCompactionAudits(
             session: compacted,
             messageIdsBefore: idsBefore,
@@ -465,21 +672,27 @@ final class AgentRuntime: @unchecked Sendable {
         messageIdsBefore: Set<String>,
         callbacks: AgentTurnCallbacks?
     ) async -> AgentSession {
-        if Self.hasCompactionStructureChange(session: session, messageIdsBefore: messageIdsBefore),
-           let onSessionUpdated = callbacks?.onSessionUpdated {
+        let structureChanged = Self.hasCompactionStructureChange(
+            session: session,
+            messageIdsBefore: messageIdsBefore
+        )
+        if structureChanged, let onSessionUpdated = callbacks?.onSessionUpdated {
             await onSessionUpdated(session)
         }
 
         var persistedNew = false
         for message in session.messages where !messageIdsBefore.contains(message.id) {
             persistedNew = true
+            await publishStreamEvents(callbacks, [.chatMessageAppended(message)])
             if let onMessage = callbacks?.onMessage {
                 await onMessage(message)
             }
             await persistMessage(session: session, message: message)
         }
 
-        if !persistedNew {
+        // Only persist when compaction actually changed the session. A full saveSession on every
+        // model iteration (when nothing changed) caused SessionWriteLock contention / hangs.
+        if persistedNew || structureChanged {
             try? await storage.saveSession(session)
         }
         return session
@@ -651,6 +864,14 @@ final class AgentRuntime: @unchecked Sendable {
             }
         }
         return false
+    }
+
+    private func resolveToolRouter() -> CompositeToolRouter {
+        AmbientToolRouterScope.current ?? toolRouter
+    }
+
+    private func resolvePromptOrchestrator() -> any PromptOrchestrating {
+        AmbientSystemPromptOrchestratorScope.current ?? systemPromptOrchestrator
     }
 }
 

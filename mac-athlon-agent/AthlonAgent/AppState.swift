@@ -77,9 +77,6 @@ final class AppState: ObservableObject {
     // MARK: - Settings
     @Published var settings: AppSettings = AppSettings.default
 
-    // MARK: - Interaction mode (aligned with WPF Plan/Agent toggle)
-    @Published var interactionMode: AgentInteractionMode = .agent
-
     // MARK: - Services
     private(set) var themeManager: ThemeManager!
     private(set) var sessionManager: SessionManager!
@@ -88,12 +85,8 @@ final class AppState: ObservableObject {
     private(set) var skillService: SkillService!
     private(set) var workspaceService: WorkspaceService!
     private(set) var imageAttachmentService: ImageAttachmentService!
-    private(set) var planViewModel: PlanViewModel?
     private(set) var sessionTurnHost: SessionTurnHost!
-    private var planWorkspaceGuard: WorkspaceGuard!
-    private(set) var planNotebook: PlanNotebook!
     private let executeCommandRegistry = ExecuteCommandProcessRegistry()
-    private let planAutoContinueTracker = PlanAutoContinueTracker()
 
     // MARK: - Memory System
     private(set) var longTermMemory: ILongTermMemory!
@@ -142,14 +135,6 @@ final class AppState: ObservableObject {
         return sessionTurnHost.isRunning(id)
     }
 
-    var plan: AgentPlan? {
-        guard let id = activeSessionId,
-              let session = sessions.first(where: { $0.id == id }) else {
-            return nil
-        }
-        return session.plan
-    }
-
     // Convenience: workspace files from workspace service
     var workspaceFiles: [WorkspaceNode] {
         workspaceService?.files ?? []
@@ -187,32 +172,7 @@ final class AppState: ObservableObject {
         skillService.reload(savedSettings: settings.skills)
         workspaceService = WorkspaceService(ignorePatterns: settings.workspaceIgnore.directoryNames)
         imageAttachmentService = ImageAttachmentService()
-        planWorkspaceGuard = WorkspaceGuard(workspaceService: workspaceService, settings: settings)
-        planNotebook = PlanNotebook(
-            settings: settings.plan,
-            workspaceGuard: planWorkspaceGuard,
-            sessionManager: sessionManager
-        )
-        // Initialize memory system (BEFORE agentRuntime which depends on it)
-        do {
-            let memoryDir = AppPathProvider.shared.memoryPath
-            let fileLongTermMemory = try FileLongTermMemory(memoryDir: memoryDir)
-            longTermMemory = fileLongTermMemory
-            let modelClient = OpenAiChatModelClient(settings: settings)
-            memoryFlushService = MemoryFlushService(
-                longTermMemory: longTermMemory,
-                modelClient: modelClient,
-                settings: settings.memory
-            )
-            memoryConsolidationService = MemoryConsolidationService(
-                longTermMemory: longTermMemory,
-                modelClient: modelClient,
-                settings: settings.memory
-            )
-            postTurnMemoryProcessor = PostTurnMemoryProcessor(flushService: memoryFlushService)
-        } catch {
-            AgentFileLogger.log("Failed to initialize memory system: \(error.localizedDescription)", category: "Memory")
-        }
+        configureMemorySystem()
 
         agentRuntime = AgentRuntimeService(
             settings: settings,
@@ -221,26 +181,65 @@ final class AppState: ObservableObject {
             sessionManager: sessionManager,
             mcpClientService: mcpClientService,
             executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook,
             longTermMemory: longTermMemory,
             postTurnMemoryProcessor: postTurnMemoryProcessor
         )
 
         // Initialize composer commands
         composerCommandRegistry = ComposerCommandRegistry()
+        let compactionStorage = FileStorageService()
+        let compactionModelClient = OpenAiChatModelClient(settings: settings)
+        let compactionCompactor = ConversationCompactor(
+            settings: settings.contextCompaction,
+            modelClient: compactionModelClient,
+            storage: compactionStorage
+        )
+        let compactionPipeline = PreCompletionPipeline(
+            conversationCompactor: compactionCompactor,
+            settings: settings.contextCompaction
+        )
+        var compactionOrchestrator = SystemPromptOrchestrator(
+            settings: settings,
+            sections: [
+                SubAgentDelegationSection(settings: settings),
+                SubAgentPersonaSection(),
+                EncodingPolicySection(),
+                WorkspaceFilesSection()
+            ]
+        )
+        if let longTermMemory {
+            compactionOrchestrator.postProcessPrompt = { prompt in
+                _ = await MemoryPromptContributor(longTermMemory: longTermMemory).append(to: &prompt)
+            }
+        }
+        let compactionToolRouter = BuiltInTools.makeAll(
+            workspaceService: workspaceService,
+            settings: settings,
+            skillService: skillService,
+            sessionManager: sessionManager,
+            mcpRegistry: mcpClientService.registryProvider,
+            sessionWorkspacePath: workspaceRootPath,
+            executeCommandRegistry: executeCommandRegistry,
+            longTermMemory: longTermMemory
+        ).router
         let sessionCompactionService = SessionCompactionService(
-            compactor: ConversationCompactor(
-                settings: settings.contextCompaction,
-                modelClient: OpenAiChatModelClient(settings: settings),
-                storage: FileStorageService()
-            )
+            preCompletionPipeline: compactionPipeline,
+            toolRouter: compactionToolRouter,
+            systemPromptOrchestrator: compactionOrchestrator,
+            tokenEstimatorCalibrator: TokenEstimatorCalibrator(settings: settings),
+            storage: compactionStorage,
+            settings: settings,
+            skillsProvider: { [weak skillService, weak self] in
+                guard let skillService, let self else { return [] }
+                return skillService.availableSkillInfos(settings: self.settings)
+            }
         )
         composerCommandRegistry.register(CompactComposerCommand(compactionService: sessionCompactionService))
         composerCommandRegistry.register(HelpComposerCommand(registry: composerCommandRegistry))
         composerCommandExecutor = ComposerCommandExecutor(registry: composerCommandRegistry)
 
-        // Schedule periodic memory consolidation (hourly)
-        Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+        // Optional startup consolidation (one-shot, not periodic)
+        if settings.memory.enabled {
             Task { [weak self] in
                 await self?.memoryConsolidationService?.consolidate()
             }
@@ -257,12 +256,9 @@ final class AppState: ObservableObject {
             activeSessionId = initialSession.id
         }
 
-        if let id = activeSessionId {
-            planViewModel = PlanViewModel(sessionManager: sessionManager, sessionId: id)
-            if let session = sessionManager.getSession(id) {
-                interactionMode = session.interactionMode
-                applySessionWorkspace(for: session)
-            }
+        if let id = activeSessionId,
+           let session = sessionManager.getSession(id) {
+            applySessionWorkspace(for: session)
         }
 
         sessionTurnHost = SessionTurnHost(
@@ -325,6 +321,8 @@ final class AppState: ObservableObject {
         } catch {
             print("Failed to save settings: \(error)")
         }
+        configureMemorySystem()
+        agentRuntime?.stop()
         agentRuntime = AgentRuntimeService(
             settings: settings,
             workspaceService: workspaceService,
@@ -332,55 +330,36 @@ final class AppState: ObservableObject {
             sessionManager: sessionManager,
             mcpClientService: mcpClientService,
             executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook,
             longTermMemory: longTermMemory,
             postTurnMemoryProcessor: postTurnMemoryProcessor
         )
     }
 
-    var canBuildPlan: Bool {
-        !isBusy && interactionMode == .plan && plan?.phase == .draft
-    }
-
-    var planFilePathForEditor: String? {
-        planFilePath()
-    }
-
-    func setInteractionMode(_ mode: AgentInteractionMode) {
-        interactionMode = mode
-        guard let id = activeSessionId else { return }
-        sessionManager.updateSession(id) { $0.interactionMode = mode }
-        if let index = sessions.firstIndex(where: { $0.id == id }) {
-            sessions[index].interactionMode = mode
+    private func configureMemorySystem() {
+        do {
+            let memoryDir = (AppPathProvider.shared.rootPath as NSString)
+                .appendingPathComponent(settings.memory.memoryDirName)
+            let fileLongTermMemory = try FileLongTermMemory(memoryDir: memoryDir, settings: settings.memory)
+            longTermMemory = fileLongTermMemory
+            let modelClient = OpenAiChatModelClient(settings: settings)
+            memoryFlushService = MemoryFlushService(
+                longTermMemory: longTermMemory,
+                modelClient: modelClient,
+                settings: settings.memory
+            )
+            memoryConsolidationService = MemoryConsolidationService(
+                longTermMemory: longTermMemory,
+                modelClient: modelClient,
+                settings: settings.memory
+            )
+            postTurnMemoryProcessor = PostTurnMemoryProcessor(
+                flushService: memoryFlushService,
+                consolidationService: memoryConsolidationService,
+                settings: settings.memory
+            )
+        } catch {
+            AgentFileLogger.log("Failed to initialize memory system: \(error.localizedDescription)", category: "Memory")
         }
-    }
-
-    func togglePlanMode() {
-        setInteractionMode(interactionMode == .plan ? .agent : .plan)
-    }
-
-    func buildPlan() {
-        guard let id = activeSessionId else { return }
-        guard canBuildPlan else { return }
-        let result = planNotebook.approvePlan(sessionId: id)
-        if !result.success {
-            appendSystemMessage(result.message, sessionId: id)
-            return
-        }
-        setInteractionMode(.agent)
-        planViewModel?.loadPlan()
-        if let path = planFilePath() {
-            openFileEditor(path: path)
-        }
-        sendMessage(PlanExecuteDefaults.executeUserMessage.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    private func planFilePath() -> String? {
-        guard let root = workspaceRootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !root.isEmpty else {
-            return nil
-        }
-        let fileName = settings.plan.planFileName.isEmpty ? "plan.md" : settings.plan.planFileName
-        return (root as NSString).appendingPathComponent(fileName)
     }
 
     private func applyUiSettings() {
@@ -451,7 +430,6 @@ final class AppState: ObservableObject {
         sessions = sessionManager.sessions
         activeSessionId = session.id
         messages = []
-        planViewModel = PlanViewModel(sessionManager: sessionManager, sessionId: session.id)
         sessionGroups = buildSessionGroups()
         currentPage = .chat
     }
@@ -467,7 +445,6 @@ final class AppState: ObservableObject {
         }
 
         sessionTurnHost.dropSession(sessionId)
-        planAutoContinueTracker.reset(sessionId)
         uiControllers.removeValue(forKey: sessionId)
 
         let wasActive = activeSessionId == sessionId
@@ -504,18 +481,15 @@ final class AppState: ObservableObject {
         sessionManager.activateSession(sessionId)
         if let session = sessionManager.getSession(sessionId) {
             messages = session.messages
-            interactionMode = session.interactionMode
             applySessionWorkspace(for: session)
         }
-        planViewModel = PlanViewModel(sessionManager: sessionManager, sessionId: sessionId)
         sessionGroups = buildSessionGroups()
         currentPage = .chat
     }
 
     func sendMessage(_ text: String) {
-        guard let id = activeSessionId, var session = sessionManager.getSession(id) else { return }
+        guard let id = activeSessionId, let session = sessionManager.getSession(id) else { return }
         currentPage = .chat
-        planAutoContinueTracker.reset(id)
 
         let ui = uiController(for: id)
         let images = pendingImageAttachments
@@ -541,47 +515,59 @@ final class AppState: ObservableObject {
             availableSkills: skillService.availableSkillInfos(settings: settings)
         )
 
-        // Check for composer commands first
-        if let longTermMemory = longTermMemory {
+        Task { @MainActor in
             let commandContext = ComposerCommandContext(
                 userInput: text,
                 session: session,
-                workspaceRoot: workspaceRootPath
+                workspaceRoot: self.workspaceRootPath
             )
-            let cmdResult = await composerCommandExecutor.tryExecute(input: text, context: commandContext)
+            let cmdResult = await self.composerCommandExecutor.tryExecute(input: text, context: commandContext)
             if case .handled(let response) = cmdResult.outcome {
-                appendSystemMessage(response, sessionId: id)
-                sessionManager.setRunning(false, for: id)
-                updateBusyState()
+                self.appendSystemMessage(response, sessionId: id)
+                self.sessionManager.setRunning(false, for: id)
+                self.updateBusyState()
                 return
+            }
+            self.startSessionTurn(
+                sessionId: id,
+                session: session,
+                expanded: expanded,
+                imageAttachments: images,
+                ui: ui
+            )
+        }
+    }
+
+    private func startSessionTurn(
+        sessionId: String,
+        session: AgentSession,
+        expanded: String,
+        imageAttachments: [ImageAttachment],
+        ui: SessionTurnUiController
+    ) {
+        ui.addUserMessage(expanded, imageAttachments: imageAttachments)
+        sessionManager.updateSession(sessionId) { stored in
+            stored.isRunning = true
+            if let workspaceRootPath {
+                stored.activeWorkspace = workspaceRootPath
+                stored.workspaceName = activeWorkspaceName
             }
         }
 
-        ui.addUserMessage(expanded, imageAttachments: images)
-        session.isRunning = true
-        session.interactionMode = interactionMode
-        if let workspaceRootPath {
-            session.activeWorkspace = workspaceRootPath
-            session.workspaceName = activeWorkspaceName
-        }
-        sessionManager.updateSession(id) { $0 = session }
-
-        if let latest = sessionManager.getSession(id) {
-            session = latest
-        }
+        guard let session = sessionManager.getSession(sessionId) else { return }
 
         let request = SessionTurnRequest(
-            sessionId: id,
+            sessionId: sessionId,
             session: session,
             userInput: expanded,
-            imageAttachments: images,
+            imageAttachments: imageAttachments,
             ui: ui,
             isAutoContinue: false
         )
 
         if let error = sessionTurnHost.tryStart(request) {
-            appendSystemMessage(error, sessionId: id)
-            sessionManager.setRunning(false, for: id)
+            appendSystemMessage(error, sessionId: sessionId)
+            sessionManager.setRunning(false, for: sessionId)
         }
         updateBusyState()
     }
@@ -644,7 +630,9 @@ final class AppState: ObservableObject {
         if sessionId == activeSessionId,
            let toolCallId = message.toolCallId,
            let index = messages.firstIndex(where: { $0.toolCallId == toolCallId }) {
-            messages[index] = mergeToolMessage(existing: messages[index], incoming: message)
+            var updated = messages
+            updated[index] = mergeToolMessage(existing: updated[index], incoming: message)
+            messages = updated
         } else {
             appendMessage(message, sessionId: sessionId, persist: false)
             return
@@ -696,18 +684,20 @@ final class AppState: ObservableObject {
     func appendMessage(_ message: ChatMessage, sessionId: String, persist: Bool? = nil) {
         let shouldPersist = persist ?? !sessionTurnHost.isRunning(sessionId)
         if sessionId == activeSessionId {
-            if let index = messages.firstIndex(where: { $0.id == message.id }) {
-                messages[index] = message
+            var updated = messages
+            if let index = updated.firstIndex(where: { $0.id == message.id }) {
+                updated[index] = message
             } else {
-                messages.append(message)
+                updated.append(message)
             }
+            messages = updated
         }
         sessionManager.upsertMessage(message, to: sessionId, persist: shouldPersist)
     }
 
     func removeMessage(sessionId: String, messageId: String) {
         if sessionId == activeSessionId {
-            messages.removeAll { $0.id == messageId }
+            messages = messages.filter { $0.id != messageId }
         }
         sessionManager.updateSession(sessionId) { session in
             session.messages.removeAll { $0.id == messageId }
@@ -755,16 +745,29 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Ends streaming on the pre-tool assistant bubble but keeps visible `content` (do not wipe the answer text).
-    func sealAssistantBeforeTools(sessionId: String, messageId: String, reasoningContent: String) {
+    /// Reassigns the active message row so `@Published` notifies SwiftUI (in-place struct mutation does not).
+    private func mutateActiveMessage(
+        messageId: String,
+        sessionId: String,
+        _ mutate: (inout ChatMessage) -> Void
+    ) {
         guard sessionId == activeSessionId,
               let index = messages.firstIndex(where: { $0.id == messageId }) else { return }
-        if !reasoningContent.isEmpty {
-            messages[index].reasoningContent = reasoningContent
+        var updated = messages
+        mutate(&updated[index])
+        messages = updated
+    }
+
+    /// Ends streaming on the pre-tool assistant bubble but keeps visible `content` (do not wipe the answer text).
+    func sealAssistantBeforeTools(sessionId: String, messageId: String, reasoningContent: String) {
+        mutateActiveMessage(messageId: messageId, sessionId: sessionId) { message in
+            if !reasoningContent.isEmpty {
+                message.reasoningContent = reasoningContent
+            }
+            message.toolCalls = nil
+            message.isStreaming = false
+            message.isReasoningStreaming = false
         }
-        messages[index].toolCalls = nil
-        messages[index].isStreaming = false
-        messages[index].isReasoningStreaming = false
         sessionManager.updateSessionInMemory(sessionId) { session in
             guard let idx = session.messages.firstIndex(where: { $0.id == messageId }) else { return }
             if !reasoningContent.isEmpty {
@@ -782,24 +785,22 @@ final class AppState: ObservableObject {
         content: String,
         isStreaming: Bool = true
     ) {
-        if sessionId == activeSessionId,
-           let index = messages.firstIndex(where: { $0.id == messageId }) {
-            messages[index].content = content
-            messages[index].isStreaming = isStreaming
+        mutateActiveMessage(messageId: messageId, sessionId: sessionId) { message in
+            message.content = content
+            message.isStreaming = isStreaming
             if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                messages[index].isReasoningStreaming = false
+                message.isReasoningStreaming = false
             }
             if !isStreaming {
-                messages[index] = messages[index].withPromotedAnswer()
-                messages[index].isReasoningStreaming = false
+                message = message.withPromotedAnswer()
+                message.isReasoningStreaming = false
             }
             if !content.isEmpty {
-                let reasoningLen = messages[index].reasoningContent.count
                 AgentFileLogger.logUIAssistant(
                     sessionId: sessionId,
                     messageId: messageId,
                     contentLength: content.count,
-                    reasoningLength: reasoningLen,
+                    reasoningLength: message.reasoningContent.count,
                     isStreaming: isStreaming,
                     source: "updateMessageContent"
                 )
@@ -825,9 +826,8 @@ final class AppState: ObservableObject {
         content: String,
         isReasoningStreaming: Bool = true
     ) {
-        if sessionId == activeSessionId,
-           let index = messages.firstIndex(where: { $0.id == messageId }) {
-            applyReasoningChannel(to: &messages[index], incoming: content, isReasoningStreaming: isReasoningStreaming)
+        mutateActiveMessage(messageId: messageId, sessionId: sessionId) { message in
+            applyReasoningChannel(to: &message, incoming: content, isReasoningStreaming: isReasoningStreaming)
         }
         sessionManager.updateSessionInMemory(sessionId) { session in
             guard let index = session.messages.firstIndex(where: { $0.id == messageId }) else { return }
@@ -860,7 +860,9 @@ final class AppState: ObservableObject {
         }
         if sessionId == activeSessionId,
            let index = messages.firstIndex(where: { $0.id == merged.id }) {
-            messages[index] = merged
+            var updated = messages
+            updated[index] = merged
+            messages = updated
             AgentFileLogger.logUIAssistant(
                 sessionId: sessionId,
                 messageId: merged.id,
@@ -935,6 +937,23 @@ final class AppState: ObservableObject {
             return
         }
 
+        if session.messages.last(where: { $0.role == .user }) == nil {
+            let userMessage = ChatMessage(
+                id: UUID().uuidString,
+                role: .user,
+                content: request.userInput,
+                createdAt: Date(),
+                imageAttachments: request.imageAttachments.isEmpty ? nil : request.imageAttachments
+            )
+            sessionManager.upsertMessage(userMessage, to: sessionId, persist: false)
+            if sessionId == activeSessionId, !messages.contains(where: { $0.id == userMessage.id }) {
+                messages = messages + [userMessage]
+            }
+            if let latest = sessionManager.getSession(sessionId) {
+                session = latest
+            }
+        }
+
         let assistantId = request.ui.reserveAssistantMessageId()
         if sessionId == activeSessionId {
             pinnedAssistantMessageId = assistantId
@@ -983,9 +1002,12 @@ final class AppState: ObservableObject {
                 if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     onChunk(content)
                 }
-                if !reasoning.isEmpty {
+                if !reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     onReasoning(reasoning)
                 }
+            },
+            onStreamEvent: { event in
+                request.ui.processStreamEvent(event)
             },
             completion: { result in
                 switch result {
@@ -1061,15 +1083,7 @@ final class AppState: ObservableObject {
         }
         sessionManager.persistSession(event.sessionId)
 
-        if event.sessionId == activeSessionId {
-            planViewModel?.loadPlan()
-            if let session = sessionManager.getSession(event.sessionId) {
-                interactionMode = session.interactionMode
-            }
-        }
-
         if tryProcessNextQueuedTurn(event) { return }
-        trySchedulePlanAutoContinue(event)
         syncQueuedTurns(sessionId: event.sessionId)
         updateBusyState()
         sessionGroups = buildSessionGroups()
@@ -1106,48 +1120,6 @@ final class AppState: ObservableObject {
         }
         updateBusyState()
         return true
-    }
-
-    private func trySchedulePlanAutoContinue(_ event: SessionTurnCompletedEvent) {
-        guard !sessionTurnHost.hasQueuedTurns(sessionId: event.sessionId) else { return }
-
-        let planSettings = settings.plan
-        let plan = sessionManager.getSession(event.sessionId)?.plan
-        let completedRounds = planAutoContinueTracker.get(event.sessionId)
-
-        guard PlanAutoContinuePolicy.shouldScheduleContinue(
-            autoContinueEnabled: planSettings.autoContinueEnabled,
-            completedAutoContinueRounds: completedRounds,
-            maxRounds: planSettings.maxAutoContinueRounds,
-            cancelled: event.cancelled,
-            timedOut: event.timedOut,
-            error: event.error,
-            plan: plan
-        ) else { return }
-
-        let ui = uiController(for: event.sessionId)
-        let input = PlanAutoContinueDefaults.continueUserMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        ui.addUserMessage(input)
-
-        var session = event.session
-        if let latest = sessionManager.getSession(event.sessionId) {
-            session = latest
-        }
-
-        let request = SessionTurnRequest(
-            sessionId: event.sessionId,
-            session: session,
-            userInput: input,
-            imageAttachments: [],
-            ui: ui,
-            isAutoContinue: true
-        )
-
-        if sessionTurnHost.tryStart(request) == nil {
-            planAutoContinueTracker.increment(event.sessionId)
-            sessionManager.setRunning(true, for: event.sessionId)
-            updateBusyState()
-        }
     }
 
     private func syncQueuedTurns(sessionId: String) {
@@ -1197,8 +1169,6 @@ final class AppState: ObservableObject {
 
         会话 ID、工作区与标题会保留；磁盘上的 transcript 归档不会删除。
 
-        同时将清除内存中的计划并删除工作区 plan.md（若存在）。
-
         下次发送消息时会重新构建系统提示（工作区、工具、技能等）。
         """
         alert.alertStyle = .warning
@@ -1227,10 +1197,9 @@ final class AppState: ObservableObject {
         sessionManager.updateSession(id) { session in
             session.messages = []
             session.isRunning = false
+            session.plan = nil
         }
         sessionManager.clearConversationDisplay(sessionId: id)
-        planViewModel?.clearPlan()
-        deleteWorkspacePlanFileIfPresent()
         sessionGroups = buildSessionGroups()
         updateBusyState()
     }
@@ -1240,16 +1209,6 @@ final class AppState: ObservableObject {
         guard sessionTurnHost.removeQueued(sessionId: id, queueId: queueId) else { return }
         sessionManager.setQueuedTurnCount(sessionTurnHost.queueCount(sessionId: id), for: id)
         syncQueuedTurns(sessionId: id)
-    }
-
-    private func deleteWorkspacePlanFileIfPresent() {
-        guard let root = workspaceRootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !root.isEmpty else { return }
-        let fileName = settings.plan.planFileName.isEmpty ? "plan.md" : settings.plan.planFileName
-        let path = (root as NSString).appendingPathComponent(fileName)
-        if FileManager.default.fileExists(atPath: path) {
-            try? FileManager.default.removeItem(atPath: path)
-        }
     }
 
     func toggleContextSidebar() {
@@ -1300,7 +1259,6 @@ final class AppState: ObservableObject {
         workspaceRootPath = path
         workspaceService.setWorkspaceRoot(path)
         workspaceService.startMonitoring()
-        planWorkspaceGuard.sessionRootPath = path
         activeWorkspace = path
         activeWorkspaceName = (path as NSString).lastPathComponent
         mcpClientService.refreshConnections(settings: settings.mcpServers, workspaceRoot: path)
@@ -1314,11 +1272,6 @@ final class AppState: ObservableObject {
 
     func refreshWorkspace() {
         workspaceService.scanWorkspace()
-    }
-
-    // MARK: - Plan Operations
-    func updatePlanSubtask(subtaskId: String, status: PlanSubtaskStatus, outcome: String?) {
-        planViewModel?.updateSubtaskStatus(subtaskId, to: status, outcome: outcome)
     }
 
     // MARK: - Cleanup

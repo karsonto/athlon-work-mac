@@ -4,8 +4,14 @@ import Foundation
 struct SubAgentDelegationSection: IEnvironmentPromptSection {
     let order = 50
     let placement: PromptSectionPlacement = .static
+    private let settings: AppSettings
+
+    init(settings: AppSettings = AppSettings.default) {
+        self.settings = settings
+    }
 
     func append(to builder: inout String, context: EnvironmentPromptContext) {
+        guard settings.subAgent.enabled else { return }
         builder += "## Delegating sub-tasks\n"
         builder += "Use `call_assistant` when a focused sub-run with tools and memory helps (research, multi-step file work, isolated experiments).\n"
         builder += "- **New session:** provide `role` (who the child is, boundaries, output style) and `message` (this turn's task, paths, acceptance criteria).\n"

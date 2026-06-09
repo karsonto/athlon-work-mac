@@ -26,9 +26,7 @@ struct ConversationCompactor: ConversationCompacting {
 
     func compactIfNeeded(
         session: AgentSession,
-        kind: CompactionKind,
-        force: Bool,
-        emitAudit: Bool
+        request: CompactionExecutionRequest
     ) async -> ConversationCompactResult {
         let cfg = settings
         var conversation = conversationMessages(from: session.messages)
@@ -36,27 +34,49 @@ struct ConversationCompactor: ConversationCompacting {
             return ConversationCompactResult(session: session, compacted: false)
         }
 
-        let (truncatedMessages, _) = truncateArgsService.applyToMessages(session.messages, settings: cfg)
-        conversation = truncatedMessages
-            .filter { $0.role != .compaction }
+        var truncateArgsApplied = false
+        if !cfg.dynamicCompaction.enabled || request.runtimeContext == nil {
+            let (truncatedMessages, changed) = truncateArgsService.applyToMessages(session.messages, settings: cfg)
+            conversation = truncatedMessages.filter { $0.role != .compaction }
+            truncateArgsApplied = changed
+        } else if request.plan?.applyTruncateArgs == true {
+            truncateArgsApplied = true
+        }
 
         let estimatedTokens = ContextTokenEstimator.estimate(
             conversation,
-            includeReasoningInModelContext: cfg.includeReasoningInModelContext
+            includeReasoningInModelContext: cfg.includeReasoningInModelContext,
+            calibrationMultiplier: request.runtimeContext?.calibrationMultiplier ?? 1.0
         )
-        if !ConversationCutoffPlanner.shouldCompact(
-            conversation,
-            estimatedTokens: estimatedTokens,
-            settings: cfg,
-            force: force
-        ) {
+
+        let shouldCompact: Bool
+        if let runtime = request.runtimeContext {
+            shouldCompact = ContextPressureEvaluator.shouldCompact(
+                budget: runtime.budget,
+                conversation: conversation,
+                settings: cfg,
+                pressure: request.plan?.pressure ?? .normal,
+                force: request.force
+            )
+        } else {
+            shouldCompact = ConversationCutoffPlanner.shouldCompact(
+                conversation,
+                estimatedTokens: estimatedTokens,
+                settings: cfg,
+                force: request.force
+            )
+        }
+
+        if !shouldCompact {
             return ConversationCompactResult(session: session, compacted: false)
         }
 
+        let keepTokenBudget = request.plan?.keepTokenBudget
         let cutoff = ConversationCutoffPlanner.determineCutoffIndex(
             conversation,
             estimatedTokens: estimatedTokens,
-            settings: cfg
+            settings: cfg,
+            keepTokenBudgetOverride: keepTokenBudget.flatMap { $0 > 0 ? $0 : nil }
         )
         if cutoff <= 0 {
             logger.debug("Compaction triggered but safe cutoff is 0 — skipping")
@@ -87,20 +107,19 @@ struct ConversationCompactor: ConversationCompacting {
         }
 
         let planAppendix = CompactionPlanContextBuilder.buildSummaryPromptAppendix(plan)
-        let promptBody: String
-        if let planAppendix, !planAppendix.isEmpty {
-            promptBody = planAppendix + "\n\n<conversation_history>\n" + formatted + "\n</conversation_history>"
-        } else {
-            promptBody = formatted
-        }
-
-        let prompt = cfg.summaryPrompt.replacingOccurrences(of: "{messages}", with: promptBody)
+        let mustPreserve = request.plan?.mustPreserveAppendix
+        let promptBody = buildSummaryPrompt(
+            template: cfg.summaryPrompt,
+            formattedMessages: formatted,
+            planAppendix: planAppendix,
+            mustPreserveAppendix: mustPreserve
+        )
 
         var summary: String
         do {
             let summaryResponse = try await modelClient.complete(
                 AgentModelRequest(
-                    messages: [AgentModelMessage(role: "user", text: prompt)],
+                    messages: [AgentModelMessage(role: "user", text: promptBody)],
                     allowToolCalls: false,
                     maxTokens: cfg.summaryMaxTokens
                 )
@@ -121,12 +140,20 @@ struct ConversationCompactor: ConversationCompacting {
         )
 
         var compactMessages: [ChatMessage] = []
-        let auditKind: CompactionKind = kind == .manualCompact ? .manualCompact : .conversationCompact
+        let auditKind: CompactionKind = request.kind == .manualCompact ? .manualCompact : .conversationCompact
 
-        if emitAudit {
+        var layers: [CompactionLayer] = [.conversationCompact]
+        if truncateArgsApplied { layers.insert(.truncateArgs, at: 0) }
+        if request.plan?.applyPrefixReEvict == true { layers.insert(.toolResultEviction, at: 0) }
+
+        let pressure = request.plan?.pressure
+        let utilization = request.runtimeContext?.budget.totalUtilization
+
+        if request.emitAudit {
             let tokensAfterPreview = ContextTokenEstimator.estimate(
                 [summaryMessage] + tail,
-                includeReasoningInModelContext: cfg.includeReasoningInModelContext
+                includeReasoningInModelContext: cfg.includeReasoningInModelContext,
+                calibrationMultiplier: request.runtimeContext?.calibrationMultiplier ?? 1.0
             )
             let auditContent: String
             if auditKind == .manualCompact {
@@ -136,12 +163,14 @@ struct ConversationCompactor: ConversationCompacting {
                     originalMessageCount: originalCount,
                     transcriptPath: transcriptPath ?? "",
                     summaryPreview: summary,
-                    layers: [.conversationCompact]
+                    layers: layers,
+                    pressureLevel: pressure,
+                    utilization: utilization
                 )
             } else {
                 let strategy: CompactionStrategy = {
-                    if kind == .manualCompact { return .manualCompact }
-                    if force { return .forceCompact }
+                    if request.force { return .forceCompact }
+                    if request.kind == .manualCompact { return .manualCompact }
                     return .conversationCompact
                 }()
                 auditContent = CompactionMessageContent.createConversationCompact(
@@ -151,7 +180,9 @@ struct ConversationCompactor: ConversationCompacting {
                     transcriptPath: transcriptPath,
                     summaryPreview: summary,
                     strategy: strategy,
-                    layers: [.conversationCompact]
+                    layers: layers,
+                    pressureLevel: pressure,
+                    utilization: utilization
                 )
             }
             compactMessages.append(CompactionMessageContent.createCompactionMessage(auditContent))
@@ -179,6 +210,27 @@ struct ConversationCompactor: ConversationCompacting {
         )
 
         return ConversationCompactResult(session: updatedSession, compacted: true)
+    }
+
+    private func buildSummaryPrompt(
+        template: String,
+        formattedMessages: String,
+        planAppendix: String?,
+        mustPreserveAppendix: String?
+    ) -> String {
+        var body = template
+        let mustPreserve = mustPreserveAppendix?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        body = body.replacingOccurrences(of: "{must_preserve}", with: mustPreserve)
+
+        if let planAppendix, !planAppendix.isEmpty {
+            body = body.replacingOccurrences(
+                of: "{messages}",
+                with: planAppendix + "\n\n<conversation_history>\n" + formattedMessages + "\n</conversation_history>"
+            )
+        } else {
+            body = body.replacingOccurrences(of: "{messages}", with: formattedMessages)
+        }
+        return body
     }
 
     private func conversationMessages(from messages: [ChatMessage]) -> [ChatMessage] {

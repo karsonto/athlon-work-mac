@@ -92,12 +92,12 @@ struct SettingsPageView: View {
             workspaceSettingsContent
         case .appearance:
             appearanceSettingsContent
-        case .plan:
-            planSettingsContent
         case .agentTurn:
             agentTurnSettingsContent
         case .logging:
             loggingSettingsContent
+        case .memory:
+            memorySettingsContent
         }
     }
 
@@ -318,21 +318,6 @@ struct SettingsPageView: View {
         }
     }
 
-    private var planSettingsContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("计划模式")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(colors.text)
-
-            Toggle("自动续跑", isOn: $appState.settings.plan.autoContinueEnabled)
-            settingsIntField("最大自动续跑轮数", value: $appState.settings.plan.maxAutoContinueRounds)
-            settingsIntField("最大子任务数", value: $appState.settings.plan.maxSubtasks)
-            settingsIntField("Overview 最少字符", value: $appState.settings.plan.minOverviewChars)
-            settingsIntField("子任务描述最少字符", value: $appState.settings.plan.minSubtaskDescriptionChars)
-            settingsIntField("子任务验收最少字符", value: $appState.settings.plan.minSubtaskExpectedOutcomeChars)
-        }
-    }
-
     private var agentTurnSettingsContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("对话回合")
@@ -362,6 +347,14 @@ struct SettingsPageView: View {
             Text("上下文压缩")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(colors.text)
+
+            Toggle("动态压缩", isOn: $appState.settings.contextCompaction.dynamicCompaction.enabled)
+                .font(.system(size: 13))
+                .toggleStyle(.switch)
+
+            Toggle("启用用量校准", isOn: $appState.settings.contextCompaction.dynamicCompaction.enableUsageCalibration)
+                .font(.system(size: 13))
+                .toggleStyle(.switch)
 
             settingsIntField("触发消息数", value: $appState.settings.contextCompaction.triggerMessages)
             settingsIntField("触发 Token 数", value: $appState.settings.contextCompaction.triggerTokens)
@@ -491,6 +484,58 @@ struct SettingsPageView: View {
         }
     }
 
+    private var memorySettingsContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("长期记忆")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(colors.text)
+
+            Toggle("启用长期记忆", isOn: $appState.settings.memory.enabled)
+                .font(.system(size: 13))
+                .toggleStyle(.switch)
+                .foregroundColor(colors.text)
+
+            settingsIntField("合并最小间隔（分钟）", value: $appState.settings.memory.consolidationMinGapMinutes)
+            settingsIntField("日志保留天数", value: $appState.settings.memory.dailyFileRetentionDays)
+            settingsIntField("摘要最大 Token", value: $appState.settings.memory.summaryMaxTokens)
+            settingsIntField("MEMORY.md 最大 Token", value: $appState.settings.memory.maxMemoryTokens)
+            settingsIntField("Flush 对话最大字符数", value: $appState.settings.memory.maxFlushConversationChars)
+
+            Text("工作区排除模式")
+                .font(.system(size: 12))
+                .foregroundColor(colors.subtleText)
+
+            ForEach(appState.settings.memory.excludePatterns.indices, id: \.self) { index in
+                HStack {
+                    TextField("排除模式", text: Binding(
+                        get: { appState.settings.memory.excludePatterns[index] },
+                        set: { appState.settings.memory.excludePatterns[index] = $0 }
+                    ))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(colors.panelAlt))
+
+                    Button(action: {
+                        appState.settings.memory.excludePatterns.remove(at: index)
+                    }) {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Button("添加排除模式") {
+                appState.settings.memory.excludePatterns.append("")
+            }
+            .font(.system(size: 12))
+
+            Button("保存设置") { appState.saveSettings() }
+                .buttonStyle(.borderedProminent)
+                .tint(colors.accent)
+        }
+    }
+
     private var ignoreSettingsContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("忽略目录")
@@ -560,7 +605,7 @@ struct SettingsPageView: View {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case model, compaction, mcp, skills, workspace, appearance, plan, agentTurn, logging, permissions, ignore
+    case model, compaction, memory, mcp, skills, workspace, appearance, agentTurn, logging, permissions, ignore
 
     var id: String { rawValue }
 
@@ -568,11 +613,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .model: "模型"
         case .compaction: "上下文压缩"
+        case .memory: "长期记忆"
         case .mcp: "MCP 服务"
         case .skills: "技能"
         case .workspace: "工作区"
         case .appearance: "外观"
-        case .plan: "计划"
         case .agentTurn: "对话回合"
         case .logging: "日志"
         case .permissions: "工具权限"
@@ -584,11 +629,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .model: "brain"
         case .compaction: "arrow.down.right.and.arrow.up.left"
+        case .memory: "brain.head.profile"
         case .mcp: "server.rack"
         case .skills: "sparkles"
         case .workspace: "folder"
         case .appearance: "paintbrush"
-        case .plan: "list.bullet.rectangle"
         case .agentTurn: "clock"
         case .logging: "doc.text"
         case .permissions: "lock.shield"

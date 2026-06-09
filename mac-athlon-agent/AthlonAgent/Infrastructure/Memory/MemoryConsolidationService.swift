@@ -2,7 +2,7 @@ import Foundation
 
 /// Periodically merges daily ledgers into a curated, deduplicated, size-bounded MEMORY.md.
 /// Uses a watermark (.consolidation_state) to process only new daily files.
-final class MemoryConsolidationService {
+final class MemoryConsolidationService: MemoryConsolidating {
     private let longTermMemory: ILongTermMemory
     private let modelClient: OpenAiChatModelClient
     private let settings: MemorySettings
@@ -96,6 +96,9 @@ Output the COMPLETE new MEMORY.md content (not just a diff). Use markdown.
         do {
             try await longTermMemory.writeCurated(consolidated)
             try await longTermMemory.writeWatermark(runStart)
+            if let fileMemory = longTermMemory as? FileLongTermMemory {
+                try await fileMemory.archiveExpiredDailyFiles()
+            }
             AgentFileLogger.log("consolidation: MEMORY.md written (\(consolidated.count) chars), watermark advanced to \(runStart)", category: "Memory")
         } catch {
             AgentFileLogger.log("consolidation: failed to save — \(error.localizedDescription)", category: "Memory")

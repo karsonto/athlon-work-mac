@@ -38,12 +38,14 @@ class SkillService: ObservableObject {
             let skillFile = resolveSkillFile(folderName: folder)
             guard let skillFile else { return nil }
             let (description, _) = parseSkillMetadata(from: skillFile)
+            let skillDirectory = skillsDir.appendingPathComponent(folder).path
             return SkillItem(
                 id: settings.name,
                 name: settings.name,
                 description: description ?? "",
                 isEnabled: settings.enabled,
-                isInstalled: true
+                isInstalled: true,
+                skillDirectory: FileManager.default.fileExists(atPath: skillDirectory) ? skillDirectory : nil
             )
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }

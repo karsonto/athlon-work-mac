@@ -162,7 +162,7 @@ final class MemoryIntegrationTests: XCTestCase {
         try await memory.writeCurated("# Previous Decision\n- Use Swift concurrency\n")
         let contributor = MemoryPromptContributor(longTermMemory: memory)
         var builder = "Base prompt\n"
-        let appended = contributor.append(to: &builder)
+        let appended = await contributor.append(to: &builder)
         XCTAssertTrue(appended)
         XCTAssertTrue(builder.contains("<long_term_memory>"))
         XCTAssertTrue(builder.contains("Swift concurrency"))
@@ -172,7 +172,7 @@ final class MemoryIntegrationTests: XCTestCase {
     func testMemoryPromptContributorSkipsWhenEmpty() async throws {
         let contributor = MemoryPromptContributor(longTermMemory: memory)
         var builder = "Base prompt\n"
-        let appended = contributor.append(to: &builder)
+        let appended = await contributor.append(to: &builder)
         XCTAssertFalse(appended)
         XCTAssertEqual(builder, "Base prompt\n")
     }
@@ -180,7 +180,17 @@ final class MemoryIntegrationTests: XCTestCase {
     // MARK: - EnvironmentPromptContext
 
     func testEnvironmentPromptContextHasWorkspace() {
-        let session = AgentSession(id: "test", title: "Test", messages: [])
+        let now = Date()
+        let session = AgentSession(
+            id: "test",
+            title: "Test",
+            messages: [],
+            createdAt: now,
+            updatedAt: now,
+            isActive: true,
+            isRunning: false,
+            queuedTurnCount: 0
+        )
         let contextNoWorkspace = EnvironmentPromptContext(
             session: session,
             workspaceRoot: nil,
@@ -188,9 +198,7 @@ final class MemoryIntegrationTests: XCTestCase {
             ignorePatterns: [],
             tools: [],
             skillsDirectory: "/tmp/skills",
-            interactionMode: .agent,
-            planAutoContinueEnabled: false,
-            planMaxSubtasks: 5
+            promptSettings: PromptSettings()
         )
         XCTAssertFalse(contextNoWorkspace.hasWorkspace)
 
@@ -201,9 +209,7 @@ final class MemoryIntegrationTests: XCTestCase {
             ignorePatterns: [],
             tools: [],
             skillsDirectory: "/tmp/skills",
-            interactionMode: .agent,
-            planAutoContinueEnabled: false,
-            planMaxSubtasks: 5
+            promptSettings: PromptSettings()
         )
         XCTAssertTrue(contextWithWorkspace.hasWorkspace)
     }
@@ -213,16 +219,99 @@ final class MemoryIntegrationTests: XCTestCase {
     func testMemorySettingsDefaults() {
         let settings = MemorySettings()
         XCTAssertTrue(settings.enabled)
-        XCTAssertEqual(settings.summaryMaxTokens, 4000)
+        XCTAssertEqual(settings.consolidationMinGapMinutes, 30)
+        XCTAssertEqual(settings.dailyFileRetentionDays, 90)
+        XCTAssertEqual(settings.summaryMaxTokens, 1024)
         XCTAssertEqual(settings.maxMemoryTokens, 4000)
+        XCTAssertEqual(settings.maxFlushConversationChars, 80_000)
+        XCTAssertEqual(settings.memoryDirName, "memory")
+        XCTAssertEqual(settings.curatedFileName, "MEMORY.md")
+        XCTAssertEqual(settings.watermarkFileName, ".consolidation_state")
+        XCTAssertEqual(settings.excludePatterns, ["memory/", "MEMORY.md"])
     }
 
     func testMemorySettingsCodableRoundTrip() throws {
-        let original = MemorySettings(enabled: false, summaryMaxTokens: 2000, maxMemoryTokens: 1000)
+        var original = MemorySettings(enabled: false, maxMemoryTokens: 1000, summaryMaxTokens: 2000)
+        original.consolidationMinGapMinutes = 15
+        original.excludePatterns = ["memory/", "MEMORY.md", "archive/"]
         let encoded = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(MemorySettings.self, from: encoded)
         XCTAssertEqual(decoded.enabled, false)
+        XCTAssertEqual(decoded.consolidationMinGapMinutes, 15)
         XCTAssertEqual(decoded.summaryMaxTokens, 2000)
         XCTAssertEqual(decoded.maxMemoryTokens, 1000)
+        XCTAssertEqual(decoded.excludePatterns, ["memory/", "MEMORY.md", "archive/"])
+    }
+
+    // MARK: - Consolidation Gap Throttling
+
+    func testPostTurnProcessorThrottlesConsolidationWithinGap() async throws {
+        let consolidateSpy = ConsolidationSpy()
+        var settings = MemorySettings()
+        settings.enabled = true
+        settings.consolidationMinGapMinutes = 30
+
+        let memoryDir = (tempDir as NSString).appendingPathComponent("processor-memory")
+        let fileMemory = try FileLongTermMemory(memoryDir: memoryDir, settings: settings)
+        let flushService = MemoryFlushService(
+            longTermMemory: fileMemory,
+            modelClient: OpenAiChatModelClient(settings: .default),
+            settings: settings
+        )
+        let processor = PostTurnMemoryProcessor(
+            flushService: flushService,
+            consolidationService: consolidateSpy,
+            settings: settings
+        )
+
+        _ = try await processor.processTurn(messages: [])
+        _ = try await processor.processTurn(messages: [])
+
+        XCTAssertEqual(consolidateSpy.callCount, 1, "Consolidation should run only once within the min gap")
+    }
+
+    func testChatMessageMemorySanitizerStripsThumbnailWhenFileExists() throws {
+        let tempFile = (tempDir as NSString).appendingPathComponent("image.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: URL(fileURLWithPath: tempFile))
+
+        let attachment = ImageAttachment(
+            id: "img-1",
+            fileName: "image.png",
+            filePath: URL(fileURLWithPath: tempFile),
+            thumbnailData: Data([1, 2, 3]),
+            fileSize: 4
+        )
+        let now = Date()
+        let session = AgentSession(
+            id: "session-1",
+            title: "Test",
+            messages: [
+                ChatMessage(
+                    id: "m1",
+                    role: .user,
+                    content: "hi",
+                    createdAt: now,
+                    imageAttachments: [attachment]
+                )
+            ],
+            createdAt: now,
+            updatedAt: now,
+            isActive: true,
+            isRunning: false,
+            queuedTurnCount: 0
+        )
+
+        let sanitized = ChatMessageMemorySanitizer.sanitizeSession(session)
+        XCTAssertNil(sanitized.messages[0].imageAttachments?[0].thumbnailData)
+        XCTAssertEqual(sanitized.messages[0].imageAttachments?[0].filePath.path, tempFile)
     }
 }
+
+private final class ConsolidationSpy: MemoryConsolidating {
+    private(set) var callCount = 0
+
+    func consolidate() async {
+        callCount += 1
+    }
+}
+

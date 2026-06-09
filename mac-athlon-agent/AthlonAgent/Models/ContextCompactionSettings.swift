@@ -19,6 +19,7 @@ struct ContextCompactionSettings: Codable, Equatable {
     var summaryMaxTokens: Int = 4_096
     var truncateArgs: TruncateArgsSettings = TruncateArgsSettings()
     var toolResultEviction: ToolResultEvictionSettings = ToolResultEvictionSettings()
+    var dynamicCompaction: DynamicCompactionSettings = DynamicCompactionSettings()
 
     enum CodingKeys: String, CodingKey {
         case contextWindowTokens
@@ -34,6 +35,7 @@ struct ContextCompactionSettings: Codable, Equatable {
         case summaryMaxTokens
         case truncateArgs
         case toolResultEviction
+        case dynamicCompaction
     }
 }
 

@@ -1,5 +1,6 @@
 import Foundation
 
+/// Formats persisted `AgentPlan` snapshots for compaction context (not interactive plan mode).
 enum PlanMarkdownFormatter {
     static func toMarkdown(_ plan: AgentPlan, detailed: Bool) -> String {
         var lines: [String] = []

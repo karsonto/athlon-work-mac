@@ -283,6 +283,8 @@ struct OpenAiDelta: Decodable {
     let content: String?
     let toolCalls: [OpenAiDeltaToolCall]?
     let reasoningContent: String?
+    /// Some providers (Qwen, etc.) use `reasoning` instead of `reasoning_content`.
+    let reasoning: String?
 
     /// Alternative field name used by some providers (e.g. Anthropic-compatible endpoints).
     let text: String?
@@ -291,11 +293,13 @@ struct OpenAiDelta: Decodable {
 
     /// Returns the first non‑nil content field.
     var resolvedContent: String? { content ?? text ?? outputText }
+    var resolvedReasoning: String? { reasoningContent ?? reasoning }
 
     enum CodingKeys: String, CodingKey {
         case role, content
         case toolCalls = "tool_calls"
         case reasoningContent = "reasoning_content"
+        case reasoning
         case text
         case outputText = "output_text"
     }

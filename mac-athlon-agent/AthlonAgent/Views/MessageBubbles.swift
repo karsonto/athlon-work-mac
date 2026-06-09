@@ -89,15 +89,22 @@ struct UserMessageBubble: View {
 // MARK: - Assistant Message Bubble
 struct AssistantMessageBubble: View {
     @EnvironmentObject var appState: AppState
-    let message: ChatMessage
+    let messageId: String
     @State private var isReasoningExpanded: Bool = false
+
+    /// Always read the live row from AppState so streaming updates re-render (ForEach snapshots go stale).
+    private var message: ChatMessage {
+        appState.messages.first(where: { $0.id == messageId })
+            ?? ChatMessage(id: messageId, role: .assistant, content: "", createdAt: Date())
+    }
 
     private var colors: ThemeColors {
         appState.theme == .dark ? .dark : .light
     }
 
     private var shouldExpandReasoningByDefault: Bool {
-        message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && message.isStreaming
+        message.isReasoningStreaming
+            || (message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && message.isStreaming && message.hasReasoning)
     }
 
     var body: some View {
@@ -137,6 +144,14 @@ struct AssistantMessageBubble: View {
                 // `isStreaming` alone must not draw an empty chrome (the "air bubble" bug).
                 if message.hasDisplayContent {
                     assistantAnswerBubble
+                } else if message.isStreaming, !message.hasReasoning {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("思考中…")
+                            .font(.system(size: 12))
+                            .foregroundColor(colors.subtleText)
+                    }
                 } else if !message.isStreaming, message.hasReasoning {
                     Text("（模型未返回可见正文，仅包含推理过程。若使用 DeepSeek，请确认模型支持 content 流式输出，或改用 deepseek-chat / deepseek-reasoner。）")
                         .font(.system(size: 12))
@@ -152,7 +167,7 @@ struct AssistantMessageBubble: View {
                         )
                 }
 
-                if message.isStreaming {
+                if message.isStreaming, message.hasDisplayContent || message.hasReasoning {
                     Text("▊")
                         .foregroundColor(colors.accent)
                 }

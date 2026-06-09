@@ -11,8 +11,8 @@ struct MemoryPromptContributor {
     }
 
     /// Appends memory content to the builder. Returns true if content was added.
-    func append(to builder: inout String) -> Bool {
-        guard let memoryContent = try? longTermMemory.readCurated(),
+    func append(to builder: inout String) async -> Bool {
+        guard let memoryContent = try? await longTermMemory.readCurated(),
               !memoryContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return false }
 

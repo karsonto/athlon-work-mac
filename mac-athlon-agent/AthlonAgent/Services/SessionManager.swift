@@ -66,8 +66,7 @@ class SessionManager: ObservableObject {
             queuedTurnCount: 0,
             activeWorkspace: workspace,
             workspaceName: workspaceName,
-            plan: nil,
-            interactionMode: .agent
+            plan: nil
         )
         sessions.insert(session, at: 0)
         deactivateOtherSessions(except: session.id)

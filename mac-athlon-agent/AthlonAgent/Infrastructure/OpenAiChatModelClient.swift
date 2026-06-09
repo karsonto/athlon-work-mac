@@ -26,12 +26,20 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
     private let apiKey: String
     private let session: URLSession
 
-    init(settings: AppSettings, apiKey: String? = nil, session: URLSession? = nil) {
+    init(
+        settings: AppSettings,
+        apiKey: String? = nil,
+        session: URLSession? = nil,
+        credentialStore: CredentialStoring = CredentialStore()
+    ) {
         self.settings = settings.model
         if let apiKey, !apiKey.isEmpty {
             self.apiKey = apiKey
         } else if !settings.model.apiKey.isEmpty {
             self.apiKey = settings.model.apiKey
+        } else if let stored = credentialStore.get(for: CredentialStore.apiKeyAccount),
+                  !stored.isEmpty {
+            self.apiKey = stored
         } else if let env = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !env.isEmpty {
             self.apiKey = env
         } else {
@@ -123,9 +131,11 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         let endpoint = normalizedEndpoint(settings.endpoint)
         guard let url = URL(string: endpoint) else { throw OpenAiModelClientError.invalidEndpoint }
 
-        let isDeepSeekThinking = ["deepseek-v4", "deepseek-reasoner", "deepseek-r1"].contains(where: {
-            settings.modelName.lowercased().contains($0)
-        })
+        let modelName = settings.modelName.lowercased()
+        // Flash/chat variants do not accept thinking params; sending them can stall or return empty streams.
+        let isDeepSeekThinking = !modelName.contains("flash")
+            && !modelName.hasSuffix("-chat")
+            && ["deepseek-v4", "deepseek-reasoner", "deepseek-r1"].contains(where: { modelName.contains($0) })
 
         let openAiTools: [OpenAiRequestTool]?
         if request.allowToolCalls, !request.tools.isEmpty {
@@ -161,6 +171,11 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.httpBody = try JSONEncoder().encode(openAiRequest)
+
+        AgentFileLogger.log(
+            "model request model=\(settings.modelName) stream=\(stream) messages=\(request.messages.count) tools=\(request.tools.count)",
+            category: "Model"
+        )
 
         if stream {
             let (bytes, response) = try await session.bytes(for: urlRequest)
@@ -289,17 +304,19 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
 
                 if let token = delta.resolvedContent, !token.isEmpty {
                     contentBuilder += token
+                    let flushText = pendingText.isEmpty
                     pendingText += token
-                    if pendingText.count >= coalesceThreshold {
+                    if flushText || pendingText.count >= coalesceThreshold {
                         if let onTextDelta { await onTextDelta(pendingText) }
                         pendingText = ""
                     }
                 }
 
-                if let reasoningToken = delta.reasoningContent, !reasoningToken.isEmpty {
+                if let reasoningToken = delta.resolvedReasoning, !reasoningToken.isEmpty {
                     reasoningBuilder += reasoningToken
+                    let flushReasoning = pendingReasoning.isEmpty
                     pendingReasoning += reasoningToken
-                    if pendingReasoning.count >= coalesceThreshold {
+                    if flushReasoning || pendingReasoning.count >= coalesceThreshold {
                         if let onReasoningDelta { await onReasoningDelta(pendingReasoning) }
                         pendingReasoning = ""
                     }
@@ -448,13 +465,26 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         let content = message.content ?? ""
         let toolCalls = parseToolCallsFromMessage(message)
         let reasoning = message.reasoningContent
-        return normalizeAssistantResponse(content: content, toolCalls: toolCalls, reasoningContent: reasoning)
+        let usage = response.usage.map {
+            AgentModelUsage(
+                promptTokens: $0.promptTokens,
+                completionTokens: $0.completionTokens,
+                totalTokens: $0.totalTokens
+            )
+        }
+        return normalizeAssistantResponse(
+            content: content,
+            toolCalls: toolCalls,
+            reasoningContent: reasoning,
+            usage: usage
+        )
     }
 
     private func normalizeAssistantResponse(
         content: String,
         toolCalls: [AgentToolCall],
-        reasoningContent: String?
+        reasoningContent: String?,
+        usage: AgentModelUsage? = nil
     ) -> AgentModelResponse {
         var (normalizedContent, normalizedReasoning) = splitEmbeddedThinkingContent(
             content: content,
@@ -477,7 +507,8 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         return AgentModelResponse(
             content: normalizedContent,
             toolCalls: toolCalls,
-            reasoningContent: normalizedReasoning
+            reasoningContent: normalizedReasoning,
+            usage: usage
         )
     }
 

@@ -6,15 +6,17 @@ import Foundation
 final class FileLongTermMemory: ILongTermMemory {
     private let fileManager = FileManager.default
     private let memoryDir: String
+    private let settings: MemorySettings
     private let curatedPath: String
     private let watermarkPath: String
     private let archiveDir: String
     private let dateFormatter: DateFormatter
 
-    init(memoryDir: String) throws {
+    init(memoryDir: String, settings: MemorySettings = MemorySettings()) throws {
         self.memoryDir = memoryDir
-        self.curatedPath = (memoryDir as NSString).appendingPathComponent("MEMORY.md")
-        self.watermarkPath = (memoryDir as NSString).appendingPathComponent(".consolidation_state")
+        self.settings = settings
+        self.curatedPath = (memoryDir as NSString).appendingPathComponent(settings.curatedFileName)
+        self.watermarkPath = (memoryDir as NSString).appendingPathComponent(settings.watermarkFileName)
         self.archiveDir = (memoryDir as NSString).appendingPathComponent("archive")
         self.dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"
@@ -53,11 +55,11 @@ final class FileLongTermMemory: ILongTermMemory {
         guard fileManager.fileExists(atPath: memoryDir) else { return [] }
         let contents = try fileManager.contentsOfDirectory(atPath: memoryDir)
         return contents
-            .filter { $0.hasSuffix(".md") && $0 != "MEMORY.md" }
+            .filter { $0.hasSuffix(".md") && $0 != settings.curatedFileName && $0 != settings.watermarkFileName }
             .filter { fileName in
-                let nameWithoutExt = (fileName as NSString).deletingPathExtension
-                guard let fileDate = dateFormatter.date(from: nameWithoutExt) else { return false }
-                return fileDate > watermark || Calendar.current.isDate(fileDate, inSameDayAs: watermark)
+                let path = (memoryDir as NSString).appendingPathComponent(fileName)
+                let lastWrite = (try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+                return lastWrite > watermark
             }
             .sorted()
     }
@@ -90,15 +92,44 @@ final class FileLongTermMemory: ILongTermMemory {
         try fileManager.createDirectory(atPath: archiveDir, withIntermediateDirectories: true)
         let src = (memoryDir as NSString).appendingPathComponent(relativePath)
         let dst = (archiveDir as NSString).appendingPathComponent(relativePath)
-        try fileManager.moveItem(atPath: src, toPath: dst)
+        if fileManager.fileExists(atPath: src) {
+            if fileManager.fileExists(atPath: dst) {
+                try fileManager.removeItem(atPath: dst)
+            }
+            try fileManager.moveItem(atPath: src, toPath: dst)
+        }
     }
 
     func listAllMemoryFilePaths() async throws -> [String] {
-        guard fileManager.fileExists(atPath: memoryDir) else { return [] }
+        var result: [String] = []
+        if fileManager.fileExists(atPath: curatedPath) {
+            result.append(settings.memoryDirName + "/" + settings.curatedFileName)
+        }
+
+        guard fileManager.fileExists(atPath: memoryDir) else { return result }
         let contents = try fileManager.contentsOfDirectory(atPath: memoryDir)
-        return contents
-            .filter { $0.hasSuffix(".md") }
-            .sorted()
+        for fileName in contents where fileName.hasSuffix(".md")
+            && fileName != settings.curatedFileName
+            && fileName != settings.watermarkFileName {
+            result.append(settings.memoryDirName + "/" + fileName)
+        }
+        return result.sorted()
+    }
+
+    /// Archives daily ledger files older than `dailyFileRetentionDays`.
+    func archiveExpiredDailyFiles() async throws {
+        guard settings.dailyFileRetentionDays > 0,
+              fileManager.fileExists(atPath: memoryDir) else { return }
+
+        let cutoff = Calendar.current.date(byAdding: .day, value: -settings.dailyFileRetentionDays, to: Date()) ?? Date.distantPast
+        let contents = try fileManager.contentsOfDirectory(atPath: memoryDir)
+        for fileName in contents where fileName.hasSuffix(".md")
+            && fileName != settings.curatedFileName
+            && fileName != settings.watermarkFileName {
+            let nameWithoutExt = (fileName as NSString).deletingPathExtension
+            guard let fileDate = dateFormatter.date(from: nameWithoutExt), fileDate < cutoff else { continue }
+            try await archiveDailyFile(relativePath: fileName)
+        }
     }
 
     private func dailyPath(for date: Date) -> String {

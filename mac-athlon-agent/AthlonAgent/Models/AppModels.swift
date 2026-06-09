@@ -43,6 +43,7 @@ struct SkillItem: Identifiable {
     var description: String
     var isEnabled: Bool
     var isInstalled: Bool
+    var skillDirectory: String?
     var statusText: String { isInstalled ? "" : "未安装" }
 }
 

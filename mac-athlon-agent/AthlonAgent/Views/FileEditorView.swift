@@ -23,19 +23,6 @@ struct FileEditorView: View {
 
                 Spacer()
 
-                if appState.canBuildPlan, appState.editingFilePath == appState.planFilePathForEditor {
-                    Button("Build") {
-                        appState.buildPlan()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(colors.accent))
-                    .help("批准计划并开始执行")
-                }
-
                 Text(appState.editingFilePath ?? "文件编辑器")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(colors.text)

@@ -12,11 +12,11 @@ struct AppSettings: Codable {
     var logging: LoggingSettings
     var contextCompaction: ContextCompactionSettings
     var prompt: PromptSettings
-    var plan: PlanSettings
     var agentTurn: AgentTurnSettings
     var fileRead: FileReadSettings
     var toolPermissions: ToolPermissionSettings
     var memory: MemorySettings
+    var subAgent: SubAgentSettings
 
     init(
         model: ModelSettings,
@@ -29,11 +29,11 @@ struct AppSettings: Codable {
         logging: LoggingSettings = LoggingSettings(),
         contextCompaction: ContextCompactionSettings = ContextCompactionSettings(),
         prompt: PromptSettings = PromptSettings(),
-        plan: PlanSettings = PlanSettings(),
         agentTurn: AgentTurnSettings = AgentTurnSettings(),
         fileRead: FileReadSettings = FileReadSettings(),
         toolPermissions: ToolPermissionSettings = ToolPermissionSettings(),
-        memory: MemorySettings = MemorySettings()
+        memory: MemorySettings = MemorySettings(),
+        subAgent: SubAgentSettings = SubAgentSettings()
     ) {
         self.model = model
         self.mcpServers = mcpServers
@@ -45,11 +45,11 @@ struct AppSettings: Codable {
         self.logging = logging
         self.contextCompaction = contextCompaction
         self.prompt = prompt
-        self.plan = plan
         self.agentTurn = agentTurn
         self.fileRead = fileRead
         self.toolPermissions = toolPermissions
         self.memory = memory
+        self.subAgent = subAgent
     }
 
     init(from decoder: Decoder) throws {
@@ -67,18 +67,19 @@ struct AppSettings: Codable {
         contextCompaction = try container.decodeIfPresent(ContextCompactionSettings.self, forKey: .contextCompaction)
             ?? ContextCompactionSettings()
         prompt = try container.decodeIfPresent(PromptSettings.self, forKey: .prompt) ?? PromptSettings()
-        plan = try container.decodeIfPresent(PlanSettings.self, forKey: .plan) ?? PlanSettings()
         agentTurn = try container.decodeIfPresent(AgentTurnSettings.self, forKey: .agentTurn) ?? AgentTurnSettings()
         fileRead = try container.decodeIfPresent(FileReadSettings.self, forKey: .fileRead) ?? FileReadSettings()
         toolPermissions = try container.decodeIfPresent(ToolPermissionSettings.self, forKey: .toolPermissions)
             ?? ToolPermissionSettings()
         memory = try container.decodeIfPresent(MemorySettings.self, forKey: .memory)
             ?? MemorySettings()
+        subAgent = try container.decodeIfPresent(SubAgentSettings.self, forKey: .subAgent)
+            ?? SubAgentSettings()
     }
 
     private enum CodingKeys: String, CodingKey {
         case model, mcpServers, skills, workspaceIgnore, workspaces, appearance, ui, logging
-        case contextCompaction, prompt, plan, agentTurn, fileRead, toolPermissions, memory
+        case contextCompaction, prompt, agentTurn, fileRead, toolPermissions, memory, subAgent
     }
 
     static let `default` = AppSettings(
@@ -208,7 +209,7 @@ struct LoggingSettings: Codable {
 
 // MARK: - Prompt Settings
 struct PromptSettings: Codable {
-    var maxAgentsMdChars: Int = 4_000
+    var maxAgentsMdChars: Int = 8_000
     var maxKnowledgeMdChars: Int = 1_500
     var maxKnowledgeCatalogEntries: Int = 50
 }

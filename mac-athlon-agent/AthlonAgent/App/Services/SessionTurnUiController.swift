@@ -96,11 +96,12 @@ final class SessionTurnUiController {
         )
     }
 
-    /// Reserves an id for the runtime without showing an empty bubble.
+    /// Reserves an id for the runtime and shows a streaming placeholder while waiting for tokens.
     func reserveAssistantMessageId() -> String {
         if let assistantMessageId { return assistantMessageId }
         let id = UUID().uuidString
         assistantMessageId = id
+        ensureStreamingAssistantVisible()
         return id
     }
 
@@ -108,15 +109,17 @@ final class SessionTurnUiController {
     @MainActor
     func adoptAssistantMessageId(_ id: String) {
         if let appState, let previous = assistantMessageId, previous != id {
-            for index in appState.messages.indices {
-                var message = appState.messages[index]
+            var updated = appState.messages
+            for index in updated.indices {
+                var message = updated[index]
                 guard message.role == .assistant, message.id != id else { continue }
                 guard message.isStreaming || message.isReasoningStreaming else { continue }
                 message.isStreaming = false
                 message.isReasoningStreaming = false
                 message = message.withPromotedAnswer()
-                appState.messages[index] = message
+                updated[index] = message
             }
+            appState.messages = updated
         }
         postToolContentPhase = toolPhaseSealed
         let sameTarget = assistantMessageId == id
@@ -130,17 +133,15 @@ final class SessionTurnUiController {
     }
 
     func addUserMessage(_ input: String, imageAttachments: [ImageAttachment] = []) {
-        Task { @MainActor in
-            guard let appState else { return }
-            let message = ChatMessage(
-                id: UUID().uuidString,
-                role: .user,
-                content: input,
-                createdAt: Date(),
-                imageAttachments: imageAttachments.isEmpty ? nil : imageAttachments
-            )
-            appState.appendMessage(message, sessionId: self.sessionId)
-        }
+        guard let appState else { return }
+        let message = ChatMessage(
+            id: UUID().uuidString,
+            role: .user,
+            content: input,
+            createdAt: Date(),
+            imageAttachments: imageAttachments.isEmpty ? nil : imageAttachments
+        )
+        appState.appendMessage(message, sessionId: sessionId)
     }
 
     @MainActor
@@ -176,6 +177,66 @@ final class SessionTurnUiController {
         let reasoning = appState.messages.first(where: { $0.id == id })?.reasoningContent ?? streamingReasoningBuffer
         appState.sealAssistantBeforeTools(sessionId: sessionId, messageId: id, reasoningContent: reasoning)
         assistantVisibleInUI = true
+    }
+
+    func processStreamEvent(_ event: AgentStreamEvent) {
+        switch event {
+        case .textMessageStart(let messageId, _):
+            adoptAssistantMessageId(messageId)
+        case .textMessageContent(_, let delta):
+            let wasEmpty = streamingBuffer.isEmpty
+            streamingBuffer = Self.mergeDeltaBuffer(current: streamingBuffer, delta: delta)
+            if wasEmpty { streamingCoalescer?.flushNow() } else { streamingCoalescer?.scheduleFlush() }
+        case .reasoningMessageContent(_, let delta):
+            let wasEmpty = streamingReasoningBuffer.isEmpty
+            streamingReasoningBuffer = Self.mergeDeltaBuffer(current: streamingReasoningBuffer, delta: delta)
+            if wasEmpty { streamingCoalescer?.flushNow() } else { streamingCoalescer?.scheduleFlush() }
+        case .textMessageEnd, .reasoningMessageEnd:
+            streamingCoalescer?.flushNow()
+        case .toolCallStart(let toolCallId, let toolName, _):
+            appendToolCall(AgentToolCall(
+                id: toolCallId,
+                name: toolName,
+                arguments: "{}",
+                argumentsStreaming: "",
+                status: .preparing
+            ))
+        case .toolCallArgs(let toolCallId, let delta):
+            appendStreamingToolArguments(toolCallId: toolCallId, delta: delta)
+        case .toolCallEnd(let toolCallId):
+            finalizeStreamingToolCall(toolCallId: toolCallId)
+        case .clearEmptyAssistantPlaceholder:
+            clearEmptyStreamingAssistant()
+        case .chatMessageAppended(let message):
+            handleChatMessageAppended(message)
+        default:
+            break
+        }
+    }
+
+    private static func mergeDeltaBuffer(current: String, delta: String) -> String {
+        guard !delta.isEmpty else { return current }
+        if current.isEmpty { return delta }
+        if delta.hasPrefix(current) { return delta }
+        if current.hasPrefix(delta) { return current }
+        return current + delta
+    }
+
+    @MainActor
+    private func handleChatMessageAppended(_ message: ChatMessage) {
+        guard let appState else { return }
+        if message.role == .compaction {
+            clearEmptyStreamingAssistant()
+            appState.appendMessage(message, sessionId: sessionId)
+            return
+        }
+        if message.role == .tool {
+            appState.upsertToolMessage(message, sessionId: sessionId)
+            return
+        }
+        if !appState.messages.contains(where: { $0.id == message.id }) {
+            appState.appendMessage(message, sessionId: sessionId)
+        }
     }
 
     func appendStreamingText(_ fullContent: String) {
@@ -217,9 +278,64 @@ final class SessionTurnUiController {
         )
     }
 
+    @MainActor
+    private func appendStreamingToolArguments(toolCallId: String, delta: String) {
+        guard let appState, !delta.isEmpty else { return }
+        var updated = appState.messages
+        guard let index = updated.firstIndex(where: { message in
+            message.toolCallId == toolCallId
+                || message.toolCalls?.contains(where: { $0.id == toolCallId }) == true
+        }) else { return }
+
+        var message = updated[index]
+        guard var calls = message.toolCalls,
+              let callIndex = calls.firstIndex(where: { $0.id == toolCallId }) else { return }
+
+        var call = calls[callIndex]
+        call.argumentsStreaming = Self.mergeDeltaBuffer(current: call.argumentsStreaming, delta: delta)
+        call.status = .preparing
+        calls[callIndex] = call
+        message.toolCalls = calls
+        message.content = ToolCallDisplay.headerLine(toolName: call.name, status: .preparing)
+        updated[index] = message
+        appState.messages = updated
+    }
+
+    @MainActor
+    private func finalizeStreamingToolCall(toolCallId: String) {
+        guard let appState else { return }
+        var updated = appState.messages
+        guard let index = updated.firstIndex(where: { message in
+            message.toolCalls?.contains(where: { $0.id == toolCallId }) == true
+        }) else { return }
+
+        var message = updated[index]
+        guard var calls = message.toolCalls,
+              let callIndex = calls.firstIndex(where: { $0.id == toolCallId }) else { return }
+
+        var call = calls[callIndex]
+        let argsJson = call.argumentsStreaming.isEmpty ? call.arguments : call.argumentsStreaming
+        let parsed = OpenAiChatModelClient.parseArguments(argsJson)
+        call.arguments = AssistantToolCallsCodec.serializeArguments(parsed)
+        call.argumentsStreaming = ""
+        call.status = .running
+        call.resultSummary = "执行中…"
+        calls[callIndex] = call
+        message.toolCalls = calls
+        message.content = ToolCallDisplay.headerLine(toolName: call.name, status: .running)
+        updated[index] = message
+        appState.messages = updated
+    }
+
     /// Must run synchronously on the main thread — tool completion can arrive before UI row exists.
     func appendToolCall(_ toolCall: AgentToolCall) {
         guard let appState else { return }
+        if appState.messages.contains(where: { message in
+            message.toolCallId == toolCall.id
+                || message.toolCalls?.contains(where: { $0.id == toolCall.id }) == true
+        }) {
+            return
+        }
         if !toolPhaseSealed {
             clearEmptyStreamingAssistant()
             sealPreToolAssistant()
@@ -247,8 +363,9 @@ final class SessionTurnUiController {
     func markTurnCancelled() {
         streamingCoalescer?.flushNow()
         guard let appState else { return }
-        for index in appState.messages.indices {
-            var message = appState.messages[index]
+        var updated = appState.messages
+        for index in updated.indices {
+            var message = updated[index]
             if message.isStreaming || message.isReasoningStreaming {
                 message.isStreaming = false
                 message.isReasoningStreaming = false
@@ -265,8 +382,9 @@ final class SessionTurnUiController {
                 }
                 message.toolCalls = calls
             }
-            appState.messages[index] = message
+            updated[index] = message
         }
+        appState.messages = updated
     }
 
     func finalizeTurn(
@@ -276,84 +394,100 @@ final class SessionTurnUiController {
         errorMessage: String?,
         reconciledMessages: [ChatMessage] = []
     ) {
-        Task { @MainActor in
-            guard let appState else { return }
-            streamingCoalescer?.flushNow()
+        guard let appState else { return }
+        streamingCoalescer?.flushNow()
 
-            if cancelled {
-                markTurnCancelled()
-            }
+        if cancelled {
+            markTurnCancelled()
+        }
 
-            if let assistantId = self.assistantMessageId {
-                let persisted = appState.sessionManager.getSession(self.sessionId)?
-                    .messages.last(where: { $0.id == assistantId })
-                let uiMessage = appState.messages.first(where: { $0.id == assistantId })
-                let streamedText = fullText.isEmpty ? self.streamingBuffer : fullText
-                let persistedText = persisted?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let uiText = uiMessage?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let resolvedText = [streamedText, persistedText, uiText]
-                    .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-                    ?? ""
+        if let assistantId = self.assistantMessageId {
+            let persisted = appState.sessionManager.getSession(self.sessionId)?
+                .messages.last(where: { $0.id == assistantId })
+            let uiMessage = appState.messages.first(where: { $0.id == assistantId })
+            let streamedText = fullText.isEmpty ? self.streamingBuffer : fullText
+            let persistedText = persisted?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let uiText = uiMessage?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let resolvedText = [streamedText, persistedText, uiText]
+                .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                ?? ""
 
-                if self.assistantVisibleInUI {
-                    if let persisted, !resolvedText.isEmpty || persisted.hasReasoning {
-                        var finalMessage = persisted
-                        if !resolvedText.isEmpty {
-                            finalMessage.content = resolvedText
-                        }
-                        finalMessage.isStreaming = false
-                        finalMessage.isReasoningStreaming = false
-                        appState.syncAssistantMessage(sessionId: self.sessionId, message: finalMessage)
-                    } else if resolvedText.isEmpty, !cancelled, errorMessage == nil {
-                        appState.removeMessage(sessionId: self.sessionId, messageId: assistantId)
-                    } else {
-                        let content = resolvedText.isEmpty && cancelled ? "（已停止）" : resolvedText
-                        appState.updateMessageContent(
-                            sessionId: self.sessionId,
-                            messageId: assistantId,
-                            content: content,
-                            isStreaming: false
-                        )
-                        let reasoning = appState.messages.first(where: { $0.id == assistantId })?.reasoningContent ?? ""
-                        appState.setReasoningContent(
-                            sessionId: self.sessionId,
-                            messageId: assistantId,
-                            content: reasoning,
-                            isReasoningStreaming: false
-                        )
+            if self.assistantVisibleInUI {
+                if let persisted, !resolvedText.isEmpty || persisted.hasReasoning {
+                    var finalMessage = persisted
+                    if !resolvedText.isEmpty {
+                        finalMessage.content = resolvedText
                     }
-                } else if !resolvedText.isEmpty {
-                    let message = ChatMessage(
-                        id: assistantId,
-                        role: .assistant,
-                        content: resolvedText,
-                        createdAt: Date(),
+                    finalMessage.isStreaming = false
+                    finalMessage.isReasoningStreaming = false
+                    appState.syncAssistantMessage(sessionId: self.sessionId, message: finalMessage)
+                } else if resolvedText.isEmpty, !cancelled, errorMessage == nil {
+                    appState.removeMessage(sessionId: self.sessionId, messageId: assistantId)
+                } else {
+                    let content: String
+                    if !resolvedText.isEmpty {
+                        content = resolvedText
+                    } else if cancelled {
+                        content = "（已停止）"
+                    } else if let errorMessage, !errorMessage.isEmpty {
+                        content = errorMessage
+                    } else {
+                        content = ""
+                    }
+                    appState.updateMessageContent(
+                        sessionId: self.sessionId,
+                        messageId: assistantId,
+                        content: content,
                         isStreaming: false
                     )
-                    appState.appendMessage(message, sessionId: self.sessionId)
+                    let reasoning = appState.messages.first(where: { $0.id == assistantId })?.reasoningContent ?? ""
+                    appState.setReasoningContent(
+                        sessionId: self.sessionId,
+                        messageId: assistantId,
+                        content: reasoning,
+                        isReasoningStreaming: false
+                    )
                 }
-            }
-
-            if !reconciledMessages.isEmpty {
-                for message in reconciledMessages {
-                    appState.appendMessage(message, sessionId: self.sessionId)
-                }
-            } else if let errorMessage {
-                appState.appendMessage(
-                    ChatMessage(
-                        id: UUID().uuidString,
-                        role: .system,
-                        content: cancelled || timedOut
-                            ? (timedOut ? "生成超时（\(errorMessage)）" : "已停止：\(errorMessage)")
-                            : "错误: \(errorMessage)",
-                        createdAt: Date()
-                    ),
-                    sessionId: self.sessionId
+            } else if !resolvedText.isEmpty {
+                let message = ChatMessage(
+                    id: assistantId,
+                    role: .assistant,
+                    content: resolvedText,
+                    createdAt: Date(),
+                    isStreaming: false
                 )
+                appState.appendMessage(message, sessionId: self.sessionId)
             }
-
-            self.resetForTurn()
-            appState.finishTurnUI(sessionId: self.sessionId)
         }
+
+        if !reconciledMessages.isEmpty {
+            for message in reconciledMessages {
+                appState.appendMessage(message, sessionId: self.sessionId)
+            }
+        } else if let errorMessage, let assistantId = assistantMessageId, assistantVisibleInUI {
+            appState.updateMessageContent(
+                sessionId: self.sessionId,
+                messageId: assistantId,
+                content: cancelled || timedOut
+                    ? (timedOut ? "生成超时（\(errorMessage)）" : "已停止：\(errorMessage)")
+                    : errorMessage,
+                isStreaming: false
+            )
+        } else if let errorMessage {
+            appState.appendMessage(
+                ChatMessage(
+                    id: UUID().uuidString,
+                    role: .system,
+                    content: cancelled || timedOut
+                        ? (timedOut ? "生成超时（\(errorMessage)）" : "已停止：\(errorMessage)")
+                        : "错误: \(errorMessage)",
+                    createdAt: Date()
+                ),
+                sessionId: self.sessionId
+            )
+        }
+
+        self.resetForTurn()
+        appState.finishTurnUI(sessionId: self.sessionId)
     }
 }

@@ -37,7 +37,10 @@ struct AppPathProvider {
     }
 
     func sessionDirectory(_ sessionId: String) -> String {
-        (sessionsPath as NSString).appendingPathComponent(sessionId)
+        AmbientSubAgentStorageScope.resolveSessionDirectory(
+            sessionsPath: sessionsPath,
+            sessionId: sessionId
+        )
     }
 
     func resolveSkillPath(_ path: String) -> String {

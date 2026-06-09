@@ -6,14 +6,17 @@ enum BuiltInTools {
         workspaceService: WorkspaceService,
         settings: AppSettings,
         skillService: SkillService,
-        sessionContext: AgentSessionContext,
         sessionManager: SessionManager? = nil,
         mcpRegistry: McpRegistryProviding,
         sessionWorkspacePath: String? = nil,
         executeCommandRegistry: ExecuteCommandProcessRegistry? = nil,
-        planNotebook sharedPlanNotebook: PlanNotebook? = nil,
-        longTermMemory: ILongTermMemory? = nil
-    ) -> CompositeToolRouter {
+        longTermMemory: ILongTermMemory? = nil,
+        subAgentTurnRunner: SubAgentTurnRunner? = nil,
+        activeSessionContext: ActiveAgentSessionContext? = nil,
+        storage: FileStorageService? = nil,
+        subAgentSessionStore: SubAgentSessionStore? = nil,
+        subAgentPromptOrchestrator: SubAgentSystemPromptOrchestrator? = nil
+    ) -> (router: CompositeToolRouter, subAgentTool: SubAgentTool?) {
         let guard_ = WorkspaceGuard(workspaceService: workspaceService, settings: settings)
         if let sessionWorkspacePath {
             let trimmed = sessionWorkspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -21,14 +24,9 @@ enum BuiltInTools {
                 guard_.sessionRootPath = trimmed
             }
         }
-        let planNotebook = sharedPlanNotebook ?? PlanNotebook(
-            settings: settings.plan,
-            workspaceGuard: guard_,
-            sessionManager: sessionManager
-        )
         let skillLoader = SkillResourceLoader(skillService: skillService)
 
-        let tools: [any AgentTool] = [
+        var localTools: [any AgentTool] = [
             FileListTool(guard: guard_),
             FileReadTool(guard: guard_, fileReadSettings: settings.fileRead),
             FileWriteTool(guard: guard_),
@@ -40,10 +38,7 @@ enum BuiltInTools {
                 workspaceGuard: guard_,
                 processRegistry: executeCommandRegistry
             ),
-            LoadSkillThroughPathTool(loader: skillLoader),
-            CreatePlanTool(planNotebook: planNotebook, sessionContext: sessionContext),
-            GetPlanTool(planNotebook: planNotebook, sessionContext: sessionContext),
-            FinishSubtaskTool(planNotebook: planNotebook, sessionContext: sessionContext)
+            LoadSkillThroughPathTool(loader: skillLoader)
         ]
 
         var memoryTools: [any AgentTool] = []
@@ -53,8 +48,31 @@ enum BuiltInTools {
                 MemoryGetTool(longTermMemory: longTermMemory)
             ]
         }
+        localTools.append(contentsOf: memoryTools)
 
-        return CompositeToolRouter(localTools: tools + memoryTools, mcpRegistry: mcpRegistry)
+        var subAgentTool: SubAgentTool?
+        if settings.subAgent.enabled,
+           let subAgentTurnRunner,
+           let activeSessionContext,
+           let storage,
+           let subAgentSessionStore,
+           let subAgentPromptOrchestrator {
+            let childRouter = ChildAgentToolRouter(localTools: localTools, mcpRegistry: mcpRegistry)
+            let tool = SubAgentTool(
+                settings: settings,
+                storage: storage,
+                sessionStore: subAgentSessionStore,
+                childToolRouter: childRouter,
+                subAgentPromptOrchestrator: subAgentPromptOrchestrator,
+                activeSessionContext: activeSessionContext,
+                turnExecutor: subAgentTurnRunner
+            )
+            subAgentTool = tool
+            localTools.append(tool)
+        }
+
+        let router = CompositeToolRouter(localTools: localTools, mcpRegistry: mcpRegistry)
+        return (router, subAgentTool)
     }
 
     static func toolNames() -> [String] {
@@ -62,21 +80,13 @@ enum BuiltInTools {
             "file_list", "file_read", "file_write", "file_edit",
             "grep_files", "glob_files", "execute_command",
             "load_skill_through_path",
-            "create_plan", "get_plan", "finish_subtask",
-            "memory_search", "memory_get"
+            "memory_search", "memory_get",
+            "call_assistant"
         ]
     }
 
     static func isBuiltIn(_ toolName: String) -> Bool {
         toolNames().contains { $0.caseInsensitiveCompare(toolName) == .orderedSame }
-    }
-}
-
-/// Simple session context adapter for tool routing.
-final class DefaultAgentSessionContext: AgentSessionContext {
-    var sessionId: String?
-
-    init(sessionId: String? = nil) {
-        self.sessionId = sessionId
+            || toolName.caseInsensitiveCompare(AppSettings.default.subAgent.toolName) == .orderedSame
     }
 }

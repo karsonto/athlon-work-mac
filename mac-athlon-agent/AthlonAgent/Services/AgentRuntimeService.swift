@@ -57,14 +57,21 @@ final class AgentRuntimeService: ObservableObject {
     private var runtime: AgentRuntime?
     private var activeTask: Task<Void, Never>?
 
+    private var turnStreamAssistantId: String?
+    private var turnStreamContent = ""
+    private var turnStreamReasoning = ""
+
     private let workspaceService: WorkspaceService
     private let skillService: SkillService
     private let sessionManager: SessionManager
     private let mcpClientService: McpClientService
     private let executeCommandRegistry: ExecuteCommandProcessRegistry
-    private let planNotebook: PlanNotebook
     private let longTermMemory: ILongTermMemory?
     private let postTurnMemoryProcessor: IPostTurnMemoryProcessor?
+    private let subAgentTurnRunner = SubAgentTurnRunner()
+    private let activeSessionContext = DefaultActiveAgentSessionContext()
+    private let subAgentSessionStore = FileSubAgentSessionStore()
+    private let fileStorage = FileStorageService()
 
     init(
         settings: AppSettings,
@@ -73,7 +80,6 @@ final class AgentRuntimeService: ObservableObject {
         sessionManager: SessionManager,
         mcpClientService: McpClientService,
         executeCommandRegistry: ExecuteCommandProcessRegistry,
-        planNotebook: PlanNotebook,
         longTermMemory: ILongTermMemory? = nil,
         postTurnMemoryProcessor: IPostTurnMemoryProcessor? = nil
     ) {
@@ -83,12 +89,12 @@ final class AgentRuntimeService: ObservableObject {
         self.sessionManager = sessionManager
         self.mcpClientService = mcpClientService
         self.executeCommandRegistry = executeCommandRegistry
-        self.planNotebook = planNotebook
         self.longTermMemory = longTermMemory
         self.postTurnMemoryProcessor = postTurnMemoryProcessor
     }
 
     func reconfigure(settings: AppSettings) {
+        stop()
         self.settings = settings
         runtime = nil
     }
@@ -98,6 +104,9 @@ final class AgentRuntimeService: ObservableObject {
         activeTask = nil
         isRunning = false
         isStreaming = false
+        turnStreamAssistantId = nil
+        turnStreamContent = ""
+        turnStreamReasoning = ""
     }
 
     func sendTurn(
@@ -108,11 +117,11 @@ final class AgentRuntimeService: ObservableObject {
         onToolStarted: @escaping (AgentToolCall) -> Void,
         onStreamingAssistantTarget: @escaping (String) -> Void,
         onStreamingAssistantUpdate: @escaping (_ messageId: String, _ content: String, _ reasoning: String) -> Void,
+        onStreamEvent: @escaping (AgentStreamEvent) -> Void = { _ in },
         completion: @escaping (Result<AgentSession, Error>) -> Void
     ) {
-        guard !isRunning else {
-            error = "已有运行中的对话"
-            return
+        if isRunning {
+            stop()
         }
 
         isRunning = true
@@ -120,123 +129,174 @@ final class AgentRuntimeService: ObservableObject {
         error = nil
         currentReasoning = ""
         currentToolCalls = []
+        turnStreamAssistantId = streamingAssistantId
+        turnStreamContent = ""
+        turnStreamReasoning = ""
 
-        let sessionContext = DefaultAgentSessionContext(sessionId: session.id)
-        let sessionWorkspace = session.activeWorkspace?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveSessionWorkspace = (sessionWorkspace?.isEmpty == false)
-            ? sessionWorkspace
-            : workspaceService.rootPath
-        let toolRouter = BuiltInTools.makeAll(
-            workspaceService: workspaceService,
-            settings: settings,
-            skillService: skillService,
-            sessionContext: sessionContext,
-            sessionManager: sessionManager,
-            mcpRegistry: mcpClientService.registryProvider,
-            sessionWorkspacePath: effectiveSessionWorkspace,
-            executeCommandRegistry: executeCommandRegistry,
-            planNotebook: planNotebook,
-            longTermMemory: longTermMemory
+        let initialAssistantId = streamingAssistantId
+        let settingsSnapshot = settings
+        let sessionSnapshot = session
+
+        AgentFileLogger.log(
+            "sendTurn start session=\(session.id.prefix(8)) assistant=\(streamingAssistantId.prefix(8))",
+            category: "Turn"
         )
 
-        let agentRuntime = runtime ?? AgentRuntime.makeDefault(
-            settings: settings,
-            toolRouter: toolRouter,
-            skillsProvider: { [weak skillService, weak self] in
-                guard let skillService, let self else { return [] }
-                return skillService.availableSkillInfos(settings: self.settings)
-            },
-            longTermMemory: longTermMemory,
-            postTurnMemoryProcessor: postTurnMemoryProcessor
-        )
-        runtime = agentRuntime
-
-        var streamingAssistantId: String? = streamingAssistantId
-        var streamingContent = ""
-        var streamingReasoning = ""
-
-        activeTask = Task {
+        // Network + tool loop off MainActor; UI callbacks hop back explicitly.
+        activeTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
+                guard let self else { return }
+
+                let built = await MainActor.run {
+                    self.activeSessionContext.setSession(sessionSnapshot.id)
+                    let sessionWorkspace = sessionSnapshot.activeWorkspace?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let effectiveSessionWorkspace = (sessionWorkspace?.isEmpty == false)
+                        ? sessionWorkspace
+                        : self.workspaceService.rootPath
+                    let subAgentPrompt = SubAgentSystemPromptOrchestrator(
+                        settings: settingsSnapshot,
+                        skillsProvider: { [weak skillService = self.skillService, weak self] in
+                            guard let skillService, let self else { return [] }
+                            return skillService.availableSkillInfos(settings: self.settings)
+                        },
+                        longTermMemory: self.longTermMemory
+                    )
+                    return BuiltInTools.makeAll(
+                        workspaceService: self.workspaceService,
+                        settings: settingsSnapshot,
+                        skillService: self.skillService,
+                        sessionManager: self.sessionManager,
+                        mcpRegistry: self.mcpClientService.registryProvider,
+                        sessionWorkspacePath: effectiveSessionWorkspace,
+                        executeCommandRegistry: self.executeCommandRegistry,
+                        longTermMemory: self.longTermMemory,
+                        subAgentTurnRunner: self.subAgentTurnRunner,
+                        activeSessionContext: self.activeSessionContext,
+                        storage: self.fileStorage,
+                        subAgentSessionStore: self.subAgentSessionStore,
+                        subAgentPromptOrchestrator: subAgentPrompt
+                    )
+                }
+
+                let agentRuntime = await MainActor.run { () -> AgentRuntime in
+                    let runtime = self.runtime ?? AgentRuntime.makeDefault(
+                        settings: settingsSnapshot,
+                        toolRouter: built.router,
+                        skillsProvider: { [weak skillService = self.skillService, weak self] in
+                            guard let skillService, let self else { return [] }
+                            return skillService.availableSkillInfos(settings: self.settings)
+                        },
+                        longTermMemory: self.longTermMemory,
+                        postTurnMemoryProcessor: self.postTurnMemoryProcessor
+                    )
+                    self.runtime = runtime
+                    self.subAgentTurnRunner.configure { runtime }
+                    built.subAgentTool?.bindTurnExecutor(self.subAgentTurnRunner)
+                    return runtime
+                }
+
                 let callbacks = AgentTurnCallbacks(
                     onSessionUpdated: { updated in
                         await MainActor.run { onSessionUpdated(updated) }
                     },
                     onMessage: { message in
-                        await MainActor.run {
-                            onMessage(message)
-                            // Persisted assistant rows are synced via AppState; do not repoint or
-                            // re-stream from `onMessage` (that raced with tool sealing and caused
-                            // content to land on a different message id than the active stream target).
-                        }
+                        await MainActor.run { onMessage(message) }
                     },
                     onToolStarted: { toolCall in
-                        await MainActor.run {
-                            self.currentToolCalls.append(toolCall)
+                        await MainActor.run { [weak self] in
+                            self?.currentToolCalls.append(toolCall)
                             onToolStarted(toolCall)
                         }
                     },
+                    onStreamEvent: { [weak self] event in
+                        guard let self else { return }
+                        await self.dispatchStreamEvent(
+                            event,
+                            onStreamingAssistantTarget: onStreamingAssistantTarget,
+                            onStreamingAssistantUpdate: onStreamingAssistantUpdate,
+                            onStreamEvent: onStreamEvent
+                        )
+                    },
                     onStreamingAssistantTarget: { id in
-                        await MainActor.run {
-                            streamingAssistantId = id
-                            // Fresh buffers per model iteration; UI merges segments onto one bubble after tools.
-                            streamingContent = ""
-                            streamingReasoning = ""
+                        await MainActor.run { [weak self] in
+                            self?.turnStreamAssistantId = id
                             onStreamingAssistantTarget(id)
                         }
                     },
-                    onAssistantTextDelta: { delta in
-                        await MainActor.run {
-                            let merged = Self.mergeStreamingSnapshot(
-                                current: streamingContent,
-                                incoming: delta
-                            )
-                            guard merged != streamingContent else { return }
-                            streamingContent = merged
-                            if let id = streamingAssistantId {
-                                onStreamingAssistantUpdate(id, streamingContent, streamingReasoning)
-                            }
-                        }
-                    },
-                    onAssistantReasoningDelta: { delta in
-                        await MainActor.run {
-                            let merged = Self.mergeStreamingSnapshot(
-                                current: streamingReasoning,
-                                incoming: delta
-                            )
-                            guard merged != streamingReasoning else { return }
-                            streamingReasoning = merged
-                            self.currentReasoning = streamingReasoning
-                            if let id = streamingAssistantId {
-                                onStreamingAssistantUpdate(id, streamingContent, streamingReasoning)
-                            }
-                        }
-                    },
+                    onAssistantTextDelta: { _ in },
+                    onAssistantReasoningDelta: { _ in },
                     onAssistantToolCallDelta: { _ in }
                 )
 
+                AgentFileLogger.log("sendAsync begin session=\(sessionSnapshot.id.prefix(8))", category: "Turn")
+
                 let updated = try await agentRuntime.sendAsync(
-                    session: session,
-                    assistantMessageId: streamingAssistantId,
+                    session: sessionSnapshot,
+                    assistantMessageId: initialAssistantId,
                     callbacks: callbacks
                 )
 
-                await MainActor.run {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
                     self.isRunning = false
                     self.isStreaming = false
+                    AgentFileLogger.log("sendTurn success session=\(sessionSnapshot.id.prefix(8))", category: "Turn")
                     completion(.success(updated))
                 }
             } catch {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
                     self.isRunning = false
                     self.isStreaming = false
                     if Self.isCancellationError(error) {
+                        AgentFileLogger.log("sendTurn cancelled session=\(sessionSnapshot.id.prefix(8))", category: "Turn")
                         completion(.failure(CancellationError()))
                     } else {
+                        AgentFileLogger.log(
+                            "sendTurn failed session=\(sessionSnapshot.id.prefix(8)) error=\(error.localizedDescription)",
+                            category: "Turn"
+                        )
                         self.error = error.localizedDescription
                         completion(.failure(error))
                     }
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func dispatchStreamEvent(
+        _ event: AgentStreamEvent,
+        onStreamingAssistantTarget: @escaping (String) -> Void,
+        onStreamingAssistantUpdate: @escaping (_ messageId: String, _ content: String, _ reasoning: String) -> Void,
+        onStreamEvent: @escaping (AgentStreamEvent) -> Void
+    ) {
+        onStreamEvent(event)
+
+        switch event {
+        case .textMessageStart(let messageId, _), .reasoningMessageStart(let messageId, _):
+            turnStreamAssistantId = messageId
+            turnStreamContent = ""
+            turnStreamReasoning = ""
+            onStreamingAssistantTarget(messageId)
+        case .textMessageContent(_, let delta):
+            turnStreamContent = Self.mergeStreamingSnapshot(current: turnStreamContent, incoming: delta)
+            if let id = turnStreamAssistantId {
+                onStreamingAssistantUpdate(id, turnStreamContent, turnStreamReasoning)
+            }
+        case .reasoningMessageContent(_, let delta):
+            turnStreamReasoning = Self.mergeStreamingSnapshot(current: turnStreamReasoning, incoming: delta)
+            currentReasoning = turnStreamReasoning
+            if let id = turnStreamAssistantId {
+                onStreamingAssistantUpdate(id, turnStreamContent, turnStreamReasoning)
+            }
+        case .textMessageEnd, .reasoningMessageEnd:
+            if let id = turnStreamAssistantId {
+                onStreamingAssistantUpdate(id, turnStreamContent, turnStreamReasoning)
+            }
+        default:
+            break
         }
     }
 

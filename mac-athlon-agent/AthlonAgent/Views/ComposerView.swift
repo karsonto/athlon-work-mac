@@ -113,20 +113,6 @@ struct ComposerView: View {
                     )
                     .lineLimit(2)
 
-                Button(action: { appState.togglePlanMode() }) {
-                    Text(appState.interactionMode == .plan ? "Plan" : "Agent")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(appState.interactionMode == .plan ? colors.accent : colors.subtleText)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(appState.interactionMode == .plan ? colors.accent.opacity(0.15) : colors.hoverNeutral)
-                        )
-                }
-                .buttonStyle(.plain)
-                .help(appState.interactionMode == .plan ? "Plan 模式：仅调研与写计划" : "Agent 模式：可执行修改")
-
                 Spacer()
 
                 if appState.isAgentRunning {

@@ -87,12 +87,25 @@ struct AgentModelResponse: Equatable {
     let content: String
     let toolCalls: [AgentToolCall]
     let reasoningContent: String?
+    let usage: AgentModelUsage?
 
-    init(content: String, toolCalls: [AgentToolCall] = [], reasoningContent: String? = nil) {
+    init(
+        content: String,
+        toolCalls: [AgentToolCall] = [],
+        reasoningContent: String? = nil,
+        usage: AgentModelUsage? = nil
+    ) {
         self.content = content
         self.toolCalls = toolCalls
         self.reasoningContent = reasoningContent
+        self.usage = usage
     }
+}
+
+struct AgentModelUsage: Equatable {
+    let promptTokens: Int?
+    let completionTokens: Int?
+    let totalTokens: Int?
 }
 
 struct StreamingToolCallDelta: Equatable {
@@ -161,16 +174,15 @@ extension AgentSession {
 protocol ConversationCompacting: Sendable {
     func compactIfNeeded(
         session: AgentSession,
-        kind: CompactionKind,
-        force: Bool,
-        emitAudit: Bool
+        request: CompactionExecutionRequest
     ) async -> ConversationCompactResult
 }
 
 protocol PreCompletionPipelineRunning: Sendable {
     func run(
         session: AgentSession,
-        options: PreCompletionOptions?
+        options: PreCompletionOptions?,
+        runtimeContext: CompactionRuntimeContext?
     ) async -> AgentSession
 }
 

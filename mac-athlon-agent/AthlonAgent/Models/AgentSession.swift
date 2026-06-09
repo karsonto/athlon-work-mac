@@ -13,7 +13,6 @@ struct AgentSession: Identifiable, Codable {
     var isRunning: Bool
     var queuedTurnCount: Int
     var plan: AgentPlan?
-    var interactionMode: AgentInteractionMode
 
     var hasChatMessages: Bool { !messages.filter { $0.role != .system }.isEmpty }
 
@@ -28,8 +27,7 @@ struct AgentSession: Identifiable, Codable {
         queuedTurnCount: Int,
         activeWorkspace: String? = nil,
         workspaceName: String? = nil,
-        plan: AgentPlan? = nil,
-        interactionMode: AgentInteractionMode = .agent
+        plan: AgentPlan? = nil
     ) {
         self.id = id
         self.title = title
@@ -42,24 +40,12 @@ struct AgentSession: Identifiable, Codable {
         self.isRunning = isRunning
         self.queuedTurnCount = queuedTurnCount
         self.plan = plan
-        self.interactionMode = interactionMode
     }
+}
 
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        title = try container.decode(String.self, forKey: .title)
-        messages = try container.decode([ChatMessage].self, forKey: .messages)
-        activeWorkspace = try container.decodeIfPresent(String.self, forKey: .activeWorkspace)
-        workspaceName = try container.decodeIfPresent(String.self, forKey: .workspaceName)
-        createdAt = try container.decode(Date.self, forKey: .createdAt)
-        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
-        isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
-        isRunning = try container.decodeIfPresent(Bool.self, forKey: .isRunning) ?? false
-        queuedTurnCount = try container.decodeIfPresent(Int.self, forKey: .queuedTurnCount) ?? 0
-        plan = try container.decodeIfPresent(AgentPlan.self, forKey: .plan)
-        interactionMode = try container.decodeIfPresent(AgentInteractionMode.self, forKey: .interactionMode) ?? .agent
-    }
+enum PlanPhase: String, Codable {
+    case draft
+    case approved
 }
 
 // MARK: - Agent Plan

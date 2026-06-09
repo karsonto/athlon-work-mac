@@ -4,6 +4,7 @@ struct AvailableSkillInfo: Equatable {
     let name: String
     let description: String
     let skillId: String
+    let skillDirectory: String?
 }
 
 /// Expands `@skill:skillId` references in user composer text before sending to the agent.
@@ -58,7 +59,12 @@ enum SkillComposerExpander {
 extension SkillService {
     func availableSkillInfos(settings: AppSettings) -> [AvailableSkillInfo] {
         SkillFilter.enabledSkillItems(skills, settings: settings).map {
-            AvailableSkillInfo(name: $0.name, description: $0.description, skillId: $0.id)
+            AvailableSkillInfo(
+                name: $0.name,
+                description: $0.description,
+                skillId: $0.id,
+                skillDirectory: $0.skillDirectory
+            )
         }
     }
 }

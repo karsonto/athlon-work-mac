@@ -21,11 +21,10 @@ final class WorkspaceGuardTests: XCTestCase {
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
         try "hello".write(to: temp.appendingPathComponent("sample.txt"), atomically: true, encoding: .utf8)
 
-        let router = BuiltInTools.makeAll(
+        let (router, _) = BuiltInTools.makeAll(
             workspaceService: WorkspaceService(),
             settings: .default,
             skillService: SkillService(),
-            sessionContext: DefaultAgentSessionContext(),
             mcpRegistry: MockMcpRegistryForWorkspace(),
             sessionWorkspacePath: temp.path
         )

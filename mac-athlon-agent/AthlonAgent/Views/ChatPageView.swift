@@ -60,10 +60,6 @@ private struct ChatMessagesArea: View {
 
             Spacer()
 
-            if appState.plan != nil {
-                PlanBadge()
-            }
-
             Button("清空上下文") {
                 appState.clearContext()
             }
@@ -141,6 +137,12 @@ private struct ChatMessagesArea: View {
             .onChange(of: appState.activeMessages.last?.content) {
                 scrollToBottom(scrollProxy)
             }
+            .onChange(of: appState.pinnedAssistantMessageId) {
+                scrollToBottom(scrollProxy)
+            }
+            .onChange(of: pinnedAssistantSnapshot) {
+                scrollToBottom(scrollProxy)
+            }
         }
     }
 
@@ -155,7 +157,7 @@ private struct ChatMessagesArea: View {
             ToolCallCard(message: message)
                 .environmentObject(appState)
         } else if shouldShowAssistantBubble(message) {
-            AssistantMessageBubble(message: message)
+            AssistantMessageBubble(messageId: message.id)
                 .environmentObject(appState)
         }
     }
@@ -164,6 +166,15 @@ private struct ChatMessagesArea: View {
         let pinId = appState.isAgentRunning ? appState.pinnedAssistantMessageId : nil
         return ChatTimelineOrder.orderForDisplay(appState.activeMessages, pinToEndMessageId: pinId)
             .filter(\.shouldShowInChatTimeline)
+    }
+
+    /// Drives scroll updates while the pinned assistant streams (content/reasoning may not be `last`).
+    private var pinnedAssistantSnapshot: String {
+        guard let pinId = appState.pinnedAssistantMessageId,
+              let message = appState.activeMessages.first(where: { $0.id == pinId }) else {
+            return ""
+        }
+        return "\(message.content.count)|\(message.reasoningContent.count)|\(message.isStreaming)"
     }
 
     private func shouldShowAssistantBubble(_ message: ChatMessage) -> Bool {
@@ -200,23 +211,6 @@ private struct ChatComposerArea: View {
         .id("chat-composer")
         .layoutPriority(1)
         .background(colors.chatBackgroundBottom)
-    }
-}
-
-// MARK: - Plan Badge
-struct PlanBadge: View {
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "list.clipboard")
-                .font(.system(size: 9))
-            Text("计划")
-                .font(.system(size: 10))
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .foregroundColor(Color(hex: "#DDD6FE"))
-        .background(Capsule().fill(Color(hex: "#1E1B2E")))
-        .overlay(Capsule().stroke(Color(hex: "#6D28D9"), lineWidth: 1))
     }
 }
 

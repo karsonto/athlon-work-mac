@@ -133,7 +133,7 @@ final class FileStorageService: CompactionStorageProviding, @unchecked Sendable 
         if session.messages.isEmpty {
             session.messages = try loadConversationDisplay(sessionId)
         }
-        return session
+        return ChatMessageMemorySanitizer.sanitizeSession(session)
     }
 
     func loadAllSessions() throws -> [AgentSession] {
@@ -185,7 +185,8 @@ final class FileStorageService: CompactionStorageProviding, @unchecked Sendable 
             byId[message.id] = message
         }
 
-        return byId.values.sorted { $0.createdAt < $1.createdAt }
+        let ordered = byId.values.sorted { $0.createdAt < $1.createdAt }
+        return ChatMessageMemorySanitizer.sanitizeMessages(ordered)
     }
 
     func clearConversationDisplay(_ sessionId: String) throws {
@@ -362,24 +363,17 @@ final class FileStorageService: CompactionStorageProviding, @unchecked Sendable 
 
         while let url = enumerator?.nextObject() as? URL {
             guard url.lastPathComponent == "session.json" else { continue }
-            guard let data = try? Data(contentsOf: url),
-                  let session = try? JsonCodec.decode(AgentSession.self, from: data) else {
+            if AmbientSubAgentStorageScope.isSubAgentSessionPath(url.path) { continue }
+            guard let entry = SessionJsonIndexReader.tryRead(sessionJsonPath: url.path) else {
                 continue
             }
 
-            let entry = SessionIndexEntry(
-                id: session.id,
-                title: session.title,
-                path: url.deletingLastPathComponent().path,
-                updatedAt: session.updatedAt
-            )
-
-            if let existing = result[session.id] {
-                if session.updatedAt > existing.updatedAt {
-                    result[session.id] = entry
+            if let existing = result[entry.id] {
+                if entry.updatedAt > existing.updatedAt {
+                    result[entry.id] = entry
                 }
             } else {
-                result[session.id] = entry
+                result[entry.id] = entry
             }
         }
 

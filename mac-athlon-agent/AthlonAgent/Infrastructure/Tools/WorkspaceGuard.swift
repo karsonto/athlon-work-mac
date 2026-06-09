@@ -50,16 +50,28 @@ final class WorkspaceGuard {
     }
 
     func getIgnorePatterns() -> [String] {
+        var patterns: [String]
         if let root = tryGetWorkspaceRoot() {
             let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
             if let workspace = settings.workspaces.first(where: {
                 !$0.rootPath.isEmpty
                     && URL(fileURLWithPath: $0.rootPath).standardizedFileURL.path == normalizedRoot
-            }), let patterns = workspace.ignorePatterns, !patterns.isEmpty {
-                return patterns
+            }), let workspacePatterns = workspace.ignorePatterns, !workspacePatterns.isEmpty {
+                patterns = workspacePatterns
+            } else {
+                patterns = settings.workspaceIgnore.directoryNames
+            }
+        } else {
+            patterns = settings.workspaceIgnore.directoryNames
+        }
+
+        for exclude in settings.memory.excludePatterns {
+            let normalized = exclude.hasSuffix("/") ? String(exclude.dropLast()) : exclude
+            if !normalized.isEmpty, !patterns.contains(where: { $0.caseInsensitiveCompare(normalized) == .orderedSame }) {
+                patterns.append(normalized)
             }
         }
-        return settings.workspaceIgnore.directoryNames
+        return patterns
     }
 
     private func allowedRoots() -> [String] {
