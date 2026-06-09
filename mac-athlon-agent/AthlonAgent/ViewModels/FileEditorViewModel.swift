@@ -1,5 +1,6 @@
 // AthlonAgent/ViewModels/FileEditorViewModel.swift
 import Foundation
+import AppKit
 
 @MainActor
 final class FileEditorViewModel: ObservableObject {
