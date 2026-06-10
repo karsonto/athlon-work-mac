@@ -15,6 +15,8 @@ final class SessionTurnUiController {
     private var streamingBuffer = ""
     private var streamingReasoningBuffer = ""
     private var streamingCoalescer: StreamingUiCoalescer?
+    /// Incremented at the start of each turn; stale finalize callbacks must not reset state.
+    private(set) var turnEpoch = 0
 
     init(sessionId: String, appState: AppState) {
         self.sessionId = sessionId
@@ -25,6 +27,7 @@ final class SessionTurnUiController {
     }
 
     func resetForTurn() {
+        turnEpoch += 1
         streamingCoalescer?.cancel()
         streamingBuffer = ""
         streamingReasoningBuffer = ""
@@ -202,7 +205,6 @@ final class SessionTurnUiController {
         message.isReasoningStreaming = false
         updated[index] = message
         appState.messages = updated
-        assistantVisibleInUI = false
     }
 
     @MainActor
@@ -260,6 +262,7 @@ final class SessionTurnUiController {
             clearEmptyStreamingAssistant()
         case .runFinished:
             streamingCoalescer?.cancel()
+            appState?.onModelRunFinished(sessionId: sessionId)
         case .chatMessageAppended(let message):
             handleChatMessageAppended(message)
         default:
@@ -446,9 +449,11 @@ final class SessionTurnUiController {
         cancelled: Bool,
         timedOut: Bool,
         errorMessage: String?,
-        reconciledMessages: [ChatMessage] = []
+        reconciledMessages: [ChatMessage] = [],
+        activeEpoch: Int
     ) {
         guard let appState else { return }
+        guard activeEpoch == turnEpoch else { return }
         streamingCoalescer?.flushNow()
 
         if cancelled {
@@ -542,7 +547,11 @@ final class SessionTurnUiController {
         }
 
         appState.clearStreamingFlags(sessionId: self.sessionId)
-        self.resetForTurn()
-        appState.finishTurnUI(sessionId: self.sessionId)
+    }
+
+    /// Runs after the session runner is removed from `SessionTurnHost`.
+    func completeTurnUI(activeEpoch: Int) {
+        guard activeEpoch == turnEpoch else { return }
+        appState?.finishTurnUI(sessionId: sessionId)
     }
 }

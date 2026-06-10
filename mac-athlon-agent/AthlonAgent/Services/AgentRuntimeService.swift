@@ -145,7 +145,12 @@ final class AgentRuntimeService: ObservableObject {
         // Network + tool loop off MainActor; UI callbacks hop back explicitly.
         activeTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                guard let self else { return }
+                guard let self else {
+                    await MainActor.run {
+                        completion(.failure(CancellationError()))
+                    }
+                    return
+                }
 
                 let built = await MainActor.run {
                     self.activeSessionContext.setSession(sessionSnapshot.id)
@@ -238,7 +243,10 @@ final class AgentRuntimeService: ObservableObject {
                 )
 
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self else {
+                        completion(.failure(CancellationError()))
+                        return
+                    }
                     self.isRunning = false
                     self.isStreaming = false
                     AgentFileLogger.log("sendTurn success session=\(sessionSnapshot.id.prefix(8))", category: "Turn")
@@ -246,7 +254,10 @@ final class AgentRuntimeService: ObservableObject {
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self else {
+                        completion(.failure(error))
+                        return
+                    }
                     self.isRunning = false
                     self.isStreaming = false
                     if Self.isCancellationError(error) {
@@ -288,10 +299,6 @@ final class AgentRuntimeService: ObservableObject {
         case .reasoningMessageContent(_, let delta):
             turnStreamReasoning = Self.mergeStreamingSnapshot(current: turnStreamReasoning, incoming: delta)
             currentReasoning = turnStreamReasoning
-            if let id = turnStreamAssistantId {
-                onStreamingAssistantUpdate(id, turnStreamContent, turnStreamReasoning)
-            }
-        case .textMessageEnd, .reasoningMessageEnd:
             if let id = turnStreamAssistantId {
                 onStreamingAssistantUpdate(id, turnStreamContent, turnStreamReasoning)
             }

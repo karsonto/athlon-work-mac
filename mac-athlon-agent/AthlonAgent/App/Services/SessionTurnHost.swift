@@ -139,6 +139,17 @@ final class SessionTurnHost {
         return runner.turnRequest
     }
 
+    /// Removes the runner once model output has finished so queued turns can proceed
+    /// even if backend teardown is still in flight.
+    @discardableResult
+    func forceReleaseRunner(sessionId: String) -> Bool {
+        let removed = startGate.withLock { runners.removeValue(forKey: sessionId) != nil }
+        if removed {
+            onTurnStateChanged?(sessionId)
+        }
+        return removed
+    }
+
     /// Returns false when the runner was already removed (e.g. user stop via `abortTurn`).
     private func consumeRunnerFinish(for runner: SessionTurnRunner) -> Bool {
         startGate.withLock { runners.removeValue(forKey: runner.sessionId) != nil }
@@ -226,6 +237,7 @@ final class SessionTurnHost {
             Task { @MainActor [weak self] in
                 guard let self, let host = self.host else { return }
                 self.request.ui.resetForTurn()
+                let turnEpoch = self.request.ui.turnEpoch
                 host.executor(
                     self.request,
                     { chunk in self.request.ui.appendStreamingText(chunk) },
@@ -260,27 +272,32 @@ final class SessionTurnHost {
                         self.request.session = session
                     }
 
-                    switch result {
-                    case .success(let text):
-                        self.request.ui.finalizeTurn(
-                            fullText: text,
-                            cancelled: self.cancelled,
-                            timedOut: timedOut,
-                            errorMessage: nil,
-                            reconciledMessages: reconciled
-                        )
-                    case .failure(let error):
-                        self.request.ui.finalizeTurn(
-                            fullText: "",
-                            cancelled: self.cancelled,
-                            timedOut: timedOut,
-                            errorMessage: error.localizedDescription,
-                            reconciledMessages: reconciled
-                        )
+                    let finalize: () -> Void = {
+                        switch result {
+                        case .success(let text):
+                            self.request.ui.finalizeTurn(
+                                fullText: text,
+                                cancelled: self.cancelled,
+                                timedOut: timedOut,
+                                errorMessage: nil,
+                                reconciledMessages: reconciled,
+                                activeEpoch: turnEpoch
+                            )
+                        case .failure(let error):
+                            self.request.ui.finalizeTurn(
+                                fullText: "",
+                                cancelled: self.cancelled,
+                                timedOut: timedOut,
+                                errorMessage: error.localizedDescription,
+                                reconciledMessages: reconciled,
+                                activeEpoch: turnEpoch
+                            )
+                        }
                     }
 
-                    guard host.consumeRunnerFinish(for: self) else { return }
-
+                    finalize()
+                    _ = host.consumeRunnerFinish(for: self)
+                    self.request.ui.completeTurnUI(activeEpoch: turnEpoch)
                     switch result {
                     case .success:
                         host.notifyTurnCompleted(

@@ -101,6 +101,8 @@ final class AppState: ObservableObject {
     private var uiControllers: [String: SessionTurnUiController] = [:]
     private let sessionUiCache = SessionUiCache()
     private var uiSettingsSaveWorkItem: DispatchWorkItem?
+    /// Sessions whose model output has finished but runner teardown may still be in flight.
+    private var sessionOutputCompleteIds: Set<String> = []
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -280,14 +282,31 @@ final class AppState: ObservableObject {
         sessionTurnHost = SessionTurnHost(
             settingsProvider: { [weak self] in self?.settings.agentTurn ?? AgentTurnSettings() },
             executor: { [weak self] request, onChunk, onToolCall, onReasoning, completion in
-                self?.executeTurn(request, onChunk: onChunk, onToolCall: onToolCall, onReasoning: onReasoning, completion: completion)
+                guard let self else {
+                    completion(.failure(NSError(domain: "Athlon", code: -2, userInfo: [
+                        NSLocalizedDescriptionKey: "应用状态不可用"
+                    ])))
+                    return
+                }
+                self.executeTurn(
+                    request,
+                    onChunk: onChunk,
+                    onToolCall: onToolCall,
+                    onReasoning: onReasoning,
+                    completion: completion
+                )
             }
         )
         sessionTurnHost.onTurnStateChanged = { [weak self] sessionId in
             DispatchQueue.main.async { self?.handleTurnStateChanged(sessionId) }
         }
         sessionTurnHost.onTurnCompleted = { [weak self] event in
-            DispatchQueue.main.async { self?.handleTurnCompleted(event) }
+            guard let self else { return }
+            if Thread.isMainThread {
+                self.handleTurnCompleted(event)
+            } else {
+                DispatchQueue.main.async { self.handleTurnCompleted(event) }
+            }
         }
         sessionTurnHost.onReconcileTurn = { [weak self] request, session, cancelled, timedOut, errorMessage in
             guard let self else {
@@ -516,17 +535,21 @@ final class AppState: ObservableObject {
         pendingImageAttachments = []
 
         if sessionTurnHost.isRunning(id) {
-            let queueId = UUID().uuidString
-            sessionTurnHost.enqueue(QueuedTurnPayload(
-                queueId: queueId,
-                sessionId: id,
-                userInput: text,
-                imageAttachments: images,
-                ui: ui
-            ))
-            syncQueuedTurns(sessionId: id)
-            composerStatusMessage = "已加入排队，当前回合结束后将自动发送。"
-            return
+            if !sessionOutputCompleteIds.contains(id) {
+                let queueId = UUID().uuidString
+                sessionTurnHost.enqueue(QueuedTurnPayload(
+                    queueId: queueId,
+                    sessionId: id,
+                    userInput: text,
+                    imageAttachments: images,
+                    ui: ui
+                ))
+                syncQueuedTurns(sessionId: id)
+                composerStatusMessage = "已加入排队，当前回合结束后将自动发送。"
+                scheduleQueuedTurnDrain(sessionId: id)
+                return
+            }
+            _ = sessionTurnHost.forceReleaseRunner(sessionId: id)
         }
 
         composerStatusMessage = ""
@@ -565,6 +588,7 @@ final class AppState: ObservableObject {
         imageAttachments: [ImageAttachment],
         ui: SessionTurnUiController
     ) {
+        sessionOutputCompleteIds.remove(sessionId)
         ui.addUserMessage(expanded, imageAttachments: imageAttachments)
         sessionManager.updateSession(sessionId) { stored in
             stored.isRunning = true
@@ -600,6 +624,7 @@ final class AppState: ObservableObject {
 
     func stopAgent() {
         guard let id = activeSessionId else { return }
+        sessionOutputCompleteIds.remove(id)
         sessionTurnHost.cancel(sessionId: id)
         executeCommandRegistry.killAll()
         agentRuntime.stop()
@@ -613,6 +638,7 @@ final class AppState: ObservableObject {
         } else {
             sessionManager.setRunning(false, for: id)
             updateBusyState()
+            drainQueuedTurnsIfNeeded(sessionId: id)
         }
     }
 
@@ -633,11 +659,14 @@ final class AppState: ObservableObject {
             cancelled: true,
             timedOut: false,
             errorMessage: nil,
-            reconciledMessages: reconciled
+            reconciledMessages: reconciled,
+            activeEpoch: request.ui.turnEpoch
         )
+        request.ui.completeTurnUI(activeEpoch: request.ui.turnEpoch)
         sessionManager.setRunning(false, for: sessionId)
         updateBusyState()
         sessionGroups = buildSessionGroups()
+        drainQueuedTurnsIfNeeded(sessionId: sessionId)
     }
 
     // MARK: - Session turn integration
@@ -957,23 +986,43 @@ final class AppState: ObservableObject {
         return merged
     }
 
+    /// Called when model streaming ends (`runFinished`) so the composer stop button clears
+    /// and any queued follow-up messages can start immediately.
+    func onModelRunFinished(sessionId: String) {
+        markSessionOutputFinished(sessionId: sessionId)
+        _ = sessionTurnHost.forceReleaseRunner(sessionId: sessionId)
+        drainQueuedTurnsIfNeeded(sessionId: sessionId)
+    }
+
+    /// Called when model streaming ends (`runFinished`) so the composer stop button clears immediately.
+    func markSessionOutputFinished(sessionId: String) {
+        sessionOutputCompleteIds.insert(sessionId)
+        clearStreamingFlags(sessionId: sessionId)
+        if sessionId == activeSessionId {
+            isBusy = false
+            composerStatusMessage = ""
+        }
+    }
+
     func finishTurnUI(sessionId: String) {
+        sessionOutputCompleteIds.remove(sessionId)
+        if sessionId == activeSessionId {
+            isBusy = false
+        }
         sessionManager.setRunning(false, for: sessionId, persist: false)
         sessionManager.setQueuedTurnCount(sessionTurnHost.queueCount(sessionId: sessionId), for: sessionId, persist: false)
         if sessionId == activeSessionId {
             sessionManager.updateSessionInMemory(sessionId) { session in
                 session.messages = self.messages
             }
-        }
-        sessionManager.persistSession(sessionId)
-        if sessionId == activeSessionId {
             composerStatusMessage = ""
             syncSessionState()
         } else {
             sessions = sessionManager.sessions
+            updateBusyState()
         }
-        updateBusyState()
         sessionGroups = buildSessionGroups()
+        sessionManager.persistSession(sessionId)
     }
 
     private func appendSystemMessage(_ text: String, sessionId: String) {
@@ -1071,7 +1120,6 @@ final class AppState: ObservableObject {
                     if sessionId == self.activeSessionId {
                         self.mergeMessagesFromSession(updated.messages)
                     }
-                    self.sessionManager.persistSession(sessionId)
                     let assistant = updated.messages.last(where: {
                         $0.role == .assistant
                             && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1144,11 +1192,46 @@ final class AppState: ObservableObject {
         sessionGroups = buildSessionGroups()
     }
 
+    /// Safety net: if a turn ends without `handleTurnCompleted`, still drain the per-session queue.
+    private func drainQueuedTurnsIfNeeded(sessionId: String) {
+        guard !sessionTurnHost.isRunning(sessionId) else { return }
+        guard sessionTurnHost.hasQueuedTurns(sessionId: sessionId) else { return }
+        guard let session = sessionManager.getSession(sessionId) else { return }
+        let event = SessionTurnCompletedEvent(
+            sessionId: sessionId,
+            session: session,
+            cancelled: false,
+            timedOut: false,
+            isAutoContinue: false,
+            error: nil
+        )
+        if tryProcessNextQueuedTurn(event) { return }
+        syncQueuedTurns(sessionId: sessionId)
+        updateBusyState()
+    }
+
+    private func scheduleQueuedTurnDrain(sessionId: String) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for _ in 0..<100 {
+                if !self.sessionTurnHost.isRunning(sessionId) {
+                    self.drainQueuedTurnsIfNeeded(sessionId: sessionId)
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+    }
+
     private func tryProcessNextQueuedTurn(_ event: SessionTurnCompletedEvent) -> Bool {
         guard let payload = sessionTurnHost.tryDequeue(sessionId: event.sessionId) else { return false }
 
         syncQueuedTurns(sessionId: event.sessionId)
-        payload.ui.addUserMessage(payload.userInput, imageAttachments: payload.imageAttachments)
+        let expanded = SkillComposerExpander.expand(
+            payload.userInput,
+            availableSkills: skillService.availableSkillInfos(settings: settings)
+        )
+        payload.ui.addUserMessage(expanded, imageAttachments: payload.imageAttachments)
 
         var session = event.session
         if let latest = sessionManager.getSession(event.sessionId) {
@@ -1158,7 +1241,7 @@ final class AppState: ObservableObject {
         let request = SessionTurnRequest(
             sessionId: event.sessionId,
             session: session,
-            userInput: payload.userInput,
+            userInput: expanded,
             imageAttachments: payload.imageAttachments,
             ui: payload.ui,
             isAutoContinue: false
@@ -1171,7 +1254,11 @@ final class AppState: ObservableObject {
                 appendSystemMessage(error, sessionId: event.sessionId)
             }
         } else {
+            sessionOutputCompleteIds.remove(event.sessionId)
             sessionManager.setRunning(true, for: event.sessionId)
+            if event.sessionId == activeSessionId {
+                composerStatusMessage = ""
+            }
         }
         updateBusyState()
         return true
@@ -1192,6 +1279,10 @@ final class AppState: ObservableObject {
 
     private func updateBusyState() {
         guard let id = activeSessionId else {
+            isBusy = false
+            return
+        }
+        if sessionOutputCompleteIds.contains(id) {
             isBusy = false
             return
         }
