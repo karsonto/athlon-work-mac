@@ -391,7 +391,7 @@ struct SettingsPageView: View {
                 TextEditor(text: $appState.settings.contextCompaction.summaryPrompt)
                     .font(.system(size: 11, design: .monospaced))
                     .frame(minHeight: 120)
-                    .scrollContentBackground(.hidden)
+                    .hideScrollContentBackgroundIfAvailable()
                     .padding(8)
                     .background(RoundedRectangle(cornerRadius: 8).fill(colors.panelAlt))
             }
