@@ -10,7 +10,7 @@ struct FileReadSettings: Codable, Sendable {
 }
 
 struct ToolPermissionSettings: Codable, Sendable {
-    var askBeforeEveryCommand: Bool = true
+    var askBeforeEveryCommand: Bool = false
     var fileScopePolicy: String = "AskOutsideWorkspace"
     var commandAllowList: [String] = ["git", "dotnet", "python", "node", "npm", "swift", "xcodebuild"]
     var commandDenyList: [String] = ["rm -rf", "rm -r", "rm --recursive", "mkfs", "dd if=", "format"]
