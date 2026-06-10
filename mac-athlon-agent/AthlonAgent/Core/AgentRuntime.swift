@@ -525,12 +525,10 @@ final class AgentRuntime: @unchecked Sendable {
         do {
             if shouldRequestToolApproval(toolName: toolCall.name, arguments: args) {
                 let capturedArgs = args
-                let askBeforeCommand = settings.toolPermissions.askBeforeEveryCommand
                 let approved = await MainActor.run {
                     ToolApprovalGate.requestApproval(
                         toolName: toolCall.name,
-                        arguments: capturedArgs,
-                        askBeforeEveryCommand: askBeforeCommand
+                        arguments: capturedArgs
                     )
                 }
                 guard approved else {
