@@ -136,6 +136,16 @@ protocol CompactionStorageProviding: Sendable {
     func saveEvictedToolResult(sessionId: String, toolCallId: String, content: String) async throws -> String
 }
 
+// MARK: - Plan source
+
+protocol PlanProviding: Sendable {
+    func currentPlan(sessionId: String) -> AgentPlan?
+}
+
+struct SessionPlanProvider: PlanProviding {
+    func currentPlan(sessionId: String) -> AgentPlan? { nil }
+}
+
 // MARK: - Logging
 
 protocol CompactionLogging: Sendable {
@@ -162,11 +172,6 @@ extension AgentSession {
 }
 
 protocol ConversationCompacting: Sendable {
-    func compactIfNeeded(
-        session: AgentSession,
-        request: CompactionExecutionRequest
-    ) async -> ConversationCompactResult
-
     func compactIfNeeded(
         session: AgentSession,
         request: CompactionExecutionRequest
