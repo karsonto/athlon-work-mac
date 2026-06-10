@@ -119,6 +119,7 @@ private struct SkillsListView: View {
                     .padding(.vertical, DesignTokens.Spacing.xs)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, DesignTokens.Spacing.md)
         }
     }

@@ -34,6 +34,7 @@ struct McpServerStatusView: View {
                     .padding(.vertical, DesignTokens.Spacing.xs)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, DesignTokens.Spacing.md)
         }
     }
