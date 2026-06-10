@@ -434,6 +434,13 @@ struct SettingsPageView: View {
             Toggle("执行 shell 命令前询问", isOn: $appState.settings.toolPermissions.askBeforeEveryCommand)
                 .font(.system(size: 13))
                 .toggleStyle(.switch)
+                .onValueChange(of: appState.settings.toolPermissions.askBeforeEveryCommand) { _ in
+                    appState.saveSettings()
+                }
+
+            Text("关闭后仅对下方「命令拒绝列表」中的危险命令仍会弹窗确认。")
+                .font(.system(size: 11))
+                .foregroundColor(colors.subtleText)
 
             Text("命令允许前缀")
                 .font(.system(size: 12))

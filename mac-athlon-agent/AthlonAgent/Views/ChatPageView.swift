@@ -148,7 +148,7 @@ private struct ChatMessagesArea: View {
                 .padding(.top, LayoutMetrics.chatScrollPaddingTop)
                 .padding(.bottom, LayoutMetrics.chatScrollPaddingBottom)
             }
-            .onChange(of: appState.activeMessages.count) { _, _ in
+            .onValueChange(of: appState.activeMessages.count) { _ in
                 scrollDebounceTask?.cancel()
                 let proxy = scrollProxy
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -158,10 +158,10 @@ private struct ChatMessagesArea: View {
                     }
                 }
             }
-            .onChange(of: appState.activeMessages.last?.content) { _, _ in
+            .onValueChange(of: appState.activeMessages.last?.content) { _ in
                 scrollToBottom(scrollProxy)
             }
-            .onChange(of: appState.isBusy) { _, newValue in
+            .onValueChange(of: appState.isBusy) { newValue in
                 if !newValue {
                     scrollToBottom(scrollProxy, immediate: true)
                 }

@@ -4,11 +4,8 @@ import AppKit
 enum ToolApprovalGate {
     static func requestApproval(
         toolName: String,
-        arguments: [String: String],
-        askBeforeEveryCommand: Bool
+        arguments: [String: String]
     ) -> Bool {
-        guard askBeforeEveryCommand else { return true }
-
         let alert = NSAlert()
         alert.messageText = "确认执行工具？"
         alert.informativeText = "工具：\(toolName)\n参数：\(argumentsDescription(arguments))"

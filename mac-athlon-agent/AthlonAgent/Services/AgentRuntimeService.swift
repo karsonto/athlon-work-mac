@@ -184,7 +184,8 @@ final class AgentRuntimeService: ObservableObject {
                 }
 
                 let agentRuntime = await MainActor.run { () -> AgentRuntime in
-                    let runtime = self.runtime ?? AgentRuntime.makeDefault(
+                    // Rebuild each turn so tool permission toggles apply without restarting the app.
+                    let runtime = AgentRuntime.makeDefault(
                         settings: settingsSnapshot,
                         toolRouter: built.router,
                         skillsProvider: { [weak skillService = self.skillService, weak self] in
