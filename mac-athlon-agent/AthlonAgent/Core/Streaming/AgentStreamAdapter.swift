@@ -75,6 +75,8 @@ final class AgentStreamAdapter {
             }
         }
 
+        events.append(.clearEmptyAssistantPlaceholder)
+
         return events
     }
 

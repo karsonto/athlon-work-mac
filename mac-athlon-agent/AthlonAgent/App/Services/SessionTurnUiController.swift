@@ -1,17 +1,16 @@
 import Foundation
 
 /// Per-session UI bridge for parallel turns (messages + streaming buffers).
-/// Aligned with WPF `SessionTurnUiController`: one streaming assistant bubble, created on first token.
+/// Aligned with WPF `SessionStreamingUiContext`: one assistant bubble per model iteration.
 @MainActor
 final class SessionTurnUiController {
     let sessionId: String
     private weak var appState: AppState?
 
+    private var activeAssistantBubbles: [String] = []
     private var assistantMessageId: String?
-    private var assistantVisibleInUI = false
-    private var toolPhaseSealed = false
-    /// True at the start of a model iteration that follows tool execution (append next text segment).
-    private var postToolContentPhase = false
+    private var pendingTextMessageId: String?
+    private var pendingReasoningMessageId: String?
     private var streamingBuffer = ""
     private var streamingReasoningBuffer = ""
     private var streamingCoalescer: StreamingUiCoalescer?
@@ -31,26 +30,10 @@ final class SessionTurnUiController {
         streamingCoalescer?.cancel()
         streamingBuffer = ""
         streamingReasoningBuffer = ""
+        activeAssistantBubbles = []
         assistantMessageId = nil
-        assistantVisibleInUI = false
-        toolPhaseSealed = false
-        postToolContentPhase = false
-    }
-
-    /// After tools, model snapshots are a new segment — append unless the provider sent a full cumulative string.
-    private static func mergeStreamingText(existing: String, incoming: String, postToolPhase: Bool) -> String {
-        let trimmedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedIncoming.isEmpty else { return existing }
-        let trimmedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedExisting.isEmpty { return incoming }
-        if incoming.hasPrefix(existing) || incoming == existing { return incoming }
-        if existing.hasPrefix(incoming) { return existing }
-        if postToolPhase {
-            if trimmedIncoming == trimmedExisting { return existing }
-            if trimmedExisting.hasSuffix(trimmedIncoming) { return existing }
-            return trimmedExisting + "\n\n" + trimmedIncoming
-        }
-        return incoming
+        pendingTextMessageId = nil
+        pendingReasoningMessageId = nil
     }
 
     @MainActor
@@ -60,6 +43,8 @@ final class SessionTurnUiController {
         timedOut: Bool,
         errorMessage: String?
     ) -> SessionTurnEndSnapshot {
+        streamingCoalescer?.flushNow()
+
         var assistantContent: String? = streamingBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : streamingBuffer
@@ -67,9 +52,9 @@ final class SessionTurnUiController {
             ? nil
             : streamingReasoningBuffer
 
-        if let appState, let assistantMessageId {
-            let uiMessage = appState.messages.first(where: { $0.id == assistantMessageId })
-            let persisted = session.messages.first(where: { $0.id == assistantMessageId })
+        if let appState, let activeId = activeAssistantMessageId {
+            let uiMessage = appState.messages.first(where: { $0.id == activeId })
+            let persisted = session.messages.first(where: { $0.id == activeId })
             if assistantContent == nil {
                 assistantContent = [uiMessage?.content, persisted?.content]
                     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -85,7 +70,7 @@ final class SessionTurnUiController {
         let uiMessages = appState?.messages ?? []
         let incomplete = SessionTurnSnapshotBuilder.collectIncompleteToolCalls(
             session: session,
-            assistantMessageId: assistantMessageId,
+            assistantMessageId: activeAssistantMessageId,
             uiMessages: uiMessages
         )
 
@@ -99,13 +84,34 @@ final class SessionTurnUiController {
         )
     }
 
-    /// Reserves an id for the runtime and shows a streaming placeholder while waiting for tokens.
-    func reserveAssistantMessageId() -> String {
-        if let assistantMessageId { return assistantMessageId }
-        let id = UUID().uuidString
-        assistantMessageId = id
-        ensureStreamingAssistantVisible()
-        return id
+    /// Updates composer status while API context is being assembled (no placeholder bubble yet).
+    @MainActor
+    func prepareModelRequest() {
+        if let appState, sessionId == appState.activeSessionId {
+            appState.composerStatusMessage = "正在准备上下文…"
+        }
+    }
+
+    /// Prepares a streaming assistant bubble before tokens arrive (WPF: `EnsureAssistantBubble` on round start).
+    @MainActor
+    func beginModelIteration(messageId: String) {
+        let isNewIteration = assistantMessageId != messageId
+        if isNewIteration {
+            streamingBuffer = ""
+            streamingReasoningBuffer = ""
+            pendingTextMessageId = messageId
+            pendingReasoningMessageId = nil
+        }
+        if let appState, sessionId == appState.activeSessionId {
+            appState.composerStatusMessage = "正在请求模型…"
+        }
+        adoptAssistantMessageId(messageId)
+    }
+
+    /// Drops or seals a pre-token placeholder when a model round ends without streamed text.
+    @MainActor
+    func releaseAssistantPlaceholder(messageId: String) {
+        releaseAssistantBubble(messageId: messageId)
     }
 
     /// Switches the live streaming bubble to the assistant message id for the current model iteration.
@@ -123,16 +129,10 @@ final class SessionTurnUiController {
                 updated[index] = message
             }
             appState.messages = updated
+            activeAssistantBubbles.removeAll { $0 == previous }
         }
-        postToolContentPhase = toolPhaseSealed
-        let sameTarget = assistantMessageId == id
         assistantMessageId = id
-        assistantVisibleInUI = appState?.messages.contains(where: { $0.id == id }) ?? false
-        toolPhaseSealed = false
-        if !sameTarget {
-            streamingBuffer = ""
-            streamingReasoningBuffer = ""
-        }
+        ensureStreamingAssistantVisible(for: id)
     }
 
     func addUserMessage(_ input: String, imageAttachments: [ImageAttachment] = []) {
@@ -148,8 +148,13 @@ final class SessionTurnUiController {
     }
 
     @MainActor
-    private func ensureStreamingAssistantVisible() {
-        guard let appState, let id = assistantMessageId else { return }
+    private func ensureStreamingAssistantVisible(for messageId: String? = nil) {
+        guard let appState else { return }
+        guard let id = messageId ?? assistantMessageId else { return }
+
+        if !activeAssistantBubbles.contains(id) {
+            activeAssistantBubbles.append(id)
+        }
 
         if let index = appState.messages.firstIndex(where: { $0.id == id }) {
             var updated = appState.messages
@@ -162,12 +167,9 @@ final class SessionTurnUiController {
                 updated[index] = message
             }
             appState.messages = updated
-            assistantVisibleInUI = true
             return
         }
 
-        guard !assistantVisibleInUI else { return }
-        assistantVisibleInUI = true
         let message = ChatMessage(
             id: id,
             role: .assistant,
@@ -182,10 +184,12 @@ final class SessionTurnUiController {
     @MainActor
     private func releaseAssistantBubble(messageId: String) {
         guard let appState else { return }
+        activeAssistantBubbles.removeAll { $0 == messageId }
+        if assistantMessageId == messageId {
+            assistantMessageId = activeAssistantBubbles.last
+        }
+
         guard let index = appState.messages.firstIndex(where: { $0.id == messageId }) else {
-            if assistantMessageId == messageId {
-                assistantVisibleInUI = false
-            }
             return
         }
 
@@ -197,7 +201,6 @@ final class SessionTurnUiController {
         if !hasContent {
             updated.remove(at: index)
             appState.messages = updated
-            assistantVisibleInUI = false
             return
         }
 
@@ -208,45 +211,54 @@ final class SessionTurnUiController {
     }
 
     @MainActor
-    private func clearEmptyStreamingAssistant() {
-        guard let appState, let id = assistantMessageId, assistantVisibleInUI else { return }
-        if let message = appState.messages.first(where: { $0.id == id }),
-           message.content.isEmpty,
-           message.reasoningContent.isEmpty,
-           message.toolCalls?.isEmpty != false {
-            appState.removeMessage(sessionId: sessionId, messageId: id)
-            assistantVisibleInUI = false
+    private func removeEmptyActiveAssistantBubbles() {
+        guard let appState else { return }
+        for messageId in activeAssistantBubbles {
+            guard let message = appState.messages.first(where: { $0.id == messageId }),
+                  message.content.isEmpty,
+                  message.reasoningContent.isEmpty else { continue }
+            appState.removeMessage(sessionId: sessionId, messageId: messageId)
+            activeAssistantBubbles.removeAll { $0 == messageId }
+            if assistantMessageId == messageId {
+                assistantMessageId = activeAssistantBubbles.last
+            }
         }
-    }
-
-    /// Freezes the pre-tool assistant bubble (reasoning only); final answer streams into a new message after tools.
-    @MainActor
-    private func sealPreToolAssistant() {
-        guard let appState, let id = assistantMessageId, assistantVisibleInUI else { return }
-        let reasoning = appState.messages.first(where: { $0.id == id })?.reasoningContent ?? streamingReasoningBuffer
-        appState.sealAssistantBeforeTools(sessionId: sessionId, messageId: id, reasoningContent: reasoning)
-        assistantVisibleInUI = true
     }
 
     func processStreamEvent(_ event: AgentStreamEvent) {
         switch event {
         case .textMessageStart(let messageId, _):
-            adoptAssistantMessageId(messageId)
-        case .textMessageContent(_, let delta):
+            beginTextStreaming(messageId: messageId)
+        case .textMessageContent(let messageId, let delta):
+            beginTextStreaming(messageId: messageId)
             let wasEmpty = streamingBuffer.isEmpty
             streamingBuffer = Self.mergeDeltaBuffer(current: streamingBuffer, delta: delta)
             if wasEmpty { streamingCoalescer?.flushNow() } else { streamingCoalescer?.scheduleFlush() }
-        case .reasoningMessageContent(_, let delta):
+        case .reasoningMessageStart(let messageId, _):
+            beginReasoningStreaming(messageId: messageId)
+        case .reasoningMessageContent(let messageId, let delta):
+            beginReasoningStreaming(messageId: messageId)
             let wasEmpty = streamingReasoningBuffer.isEmpty
             streamingReasoningBuffer = Self.mergeDeltaBuffer(current: streamingReasoningBuffer, delta: delta)
             if wasEmpty { streamingCoalescer?.flushNow() } else { streamingCoalescer?.scheduleFlush() }
         case .textMessageEnd(let messageId):
             streamingCoalescer?.flushNow()
             releaseAssistantBubble(messageId: messageId)
+            if pendingTextMessageId == messageId {
+                pendingTextMessageId = nil
+                streamingBuffer = ""
+            }
         case .reasoningMessageEnd(let messageId):
             streamingCoalescer?.flushNow()
             releaseAssistantBubble(messageId: messageId)
+            if pendingReasoningMessageId == messageId {
+                pendingReasoningMessageId = nil
+                streamingReasoningBuffer = ""
+            }
         case .toolCallStart(let toolCallId, let toolName, _):
+            if let id = assistantMessageId {
+                releaseAssistantBubble(messageId: id)
+            }
             appendToolCall(AgentToolCall(
                 id: toolCallId,
                 name: toolName,
@@ -259,7 +271,7 @@ final class SessionTurnUiController {
         case .toolCallEnd(let toolCallId):
             finalizeStreamingToolCall(toolCallId: toolCallId)
         case .clearEmptyAssistantPlaceholder:
-            clearEmptyStreamingAssistant()
+            removeEmptyActiveAssistantBubbles()
         case .runFinished:
             streamingCoalescer?.cancel()
             appState?.onModelRunFinished(sessionId: sessionId)
@@ -268,6 +280,22 @@ final class SessionTurnUiController {
         default:
             break
         }
+    }
+
+    private func beginTextStreaming(messageId: String) {
+        if pendingTextMessageId != messageId {
+            streamingBuffer = ""
+            pendingTextMessageId = messageId
+        }
+        adoptAssistantMessageId(messageId)
+    }
+
+    private func beginReasoningStreaming(messageId: String) {
+        if pendingReasoningMessageId != messageId {
+            streamingReasoningBuffer = ""
+            pendingReasoningMessageId = messageId
+        }
+        adoptAssistantMessageId(messageId)
     }
 
     private static func mergeDeltaBuffer(current: String, delta: String) -> String {
@@ -282,12 +310,30 @@ final class SessionTurnUiController {
     private func handleChatMessageAppended(_ message: ChatMessage) {
         guard let appState else { return }
         if message.role == .compaction {
-            clearEmptyStreamingAssistant()
+            removeEmptyActiveAssistantBubbles()
             appState.appendMessage(message, sessionId: sessionId)
             return
         }
         if message.role == .tool {
             appState.upsertToolMessage(message, sessionId: sessionId)
+            return
+        }
+        if message.role == .assistant, message.isAssistantToolCallsOnly {
+            return
+        }
+        if message.role == .assistant,
+           let activeId = activeAssistantMessageId,
+           activeId == message.id,
+           appState.messages.contains(where: { $0.id == message.id }) {
+            var assistant = message.withPromotedAnswer()
+            assistant.isStreaming = false
+            assistant.isReasoningStreaming = false
+            assistant.toolCalls = nil
+            appState.syncAssistantMessage(sessionId: sessionId, message: assistant)
+            activeAssistantBubbles.removeAll { $0 == message.id }
+            if assistantMessageId == message.id {
+                assistantMessageId = activeAssistantBubbles.last
+            }
             return
         }
         if !appState.messages.contains(where: { $0.id == message.id }) {
@@ -308,31 +354,36 @@ final class SessionTurnUiController {
     private func applyPendingStreamingSnapshot() {
         guard let appState else { return }
         guard appState.isSessionTurnActive(sessionId) else { return }
-        if assistantMessageId == nil {
-            _ = reserveAssistantMessageId()
-        }
-        guard let assistantId = assistantMessageId else { return }
-        ensureStreamingAssistantVisible()
 
-        let merged = Self.mergeStreamingText(
-            existing: appState.messages.first(where: { $0.id == assistantId })?.content ?? "",
-            incoming: streamingBuffer,
-            postToolPhase: postToolContentPhase
-        )
-        if postToolContentPhase {
-            postToolContentPhase = false
-        }
-        appState.updateMessageContent(sessionId: sessionId, messageId: assistantId, content: merged)
+        let textMessageId = pendingTextMessageId ?? assistantMessageId
+        let reasoningMessageId = pendingReasoningMessageId ?? textMessageId
 
-        let hasAnswer = !streamingBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let reasoning = appState.messages.first(where: { $0.id == assistantId })?.reasoningContent
-            ?? streamingReasoningBuffer
-        appState.setReasoningContent(
-            sessionId: sessionId,
-            messageId: assistantId,
-            content: reasoning,
-            isReasoningStreaming: !hasAnswer
-        )
+        if let textMessageId {
+            ensureStreamingAssistantVisible(for: textMessageId)
+
+            if !streamingBuffer.isEmpty {
+                appState.updateMessageContent(sessionId: sessionId, messageId: textMessageId, content: streamingBuffer)
+                if sessionId == appState.activeSessionId {
+                    appState.composerStatusMessage = ""
+                }
+            }
+        }
+
+        if let reasoningMessageId, !streamingReasoningBuffer.isEmpty {
+            ensureStreamingAssistantVisible(for: reasoningMessageId)
+            let hasAnswer = !(appState.messages.first(where: { $0.id == reasoningMessageId })?.content
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? false)
+                || !streamingBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            appState.setReasoningContent(
+                sessionId: sessionId,
+                messageId: reasoningMessageId,
+                content: streamingReasoningBuffer,
+                isReasoningStreaming: !hasAnswer
+            )
+            if sessionId == appState.activeSessionId {
+                appState.composerStatusMessage = hasAnswer ? "" : "模型思考中…"
+            }
+        }
     }
 
     @MainActor
@@ -393,14 +444,6 @@ final class SessionTurnUiController {
         }) {
             return
         }
-        if !toolPhaseSealed {
-            clearEmptyStreamingAssistant()
-            sealPreToolAssistant()
-            toolPhaseSealed = true
-            assistantVisibleInUI = true
-            streamingBuffer = ""
-            streamingReasoningBuffer = ""
-        }
 
         var running = toolCall
         running.status = .running
@@ -442,6 +485,7 @@ final class SessionTurnUiController {
             updated[index] = message
         }
         appState.messages = updated
+        activeAssistantBubbles = []
     }
 
     func finalizeTurn(
@@ -458,100 +502,80 @@ final class SessionTurnUiController {
 
         if cancelled {
             markTurnCancelled()
-        }
-
-        if let assistantId = self.assistantMessageId {
-            let persisted = appState.sessionManager.getSession(self.sessionId)?
-                .messages.last(where: { $0.id == assistantId })
-            let uiMessage = appState.messages.first(where: { $0.id == assistantId })
-            let streamedText = fullText.isEmpty ? self.streamingBuffer : fullText
-            let persistedText = persisted?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let uiText = uiMessage?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let resolvedText = [streamedText, persistedText, uiText]
-                .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-                ?? ""
-
-            if self.assistantVisibleInUI {
-                if let persisted, !resolvedText.isEmpty || persisted.hasReasoning {
-                    var finalMessage = persisted
-                    if !resolvedText.isEmpty {
-                        finalMessage.content = resolvedText
-                    }
-                    finalMessage.isStreaming = false
-                    finalMessage.isReasoningStreaming = false
-                    appState.syncAssistantMessage(sessionId: self.sessionId, message: finalMessage)
-                } else if resolvedText.isEmpty, !cancelled, errorMessage == nil {
-                    appState.removeMessage(sessionId: self.sessionId, messageId: assistantId)
-                } else {
-                    let content: String
-                    if !resolvedText.isEmpty {
-                        content = resolvedText
-                    } else if cancelled {
-                        content = "（已停止）"
-                    } else if let errorMessage, !errorMessage.isEmpty {
-                        content = errorMessage
-                    } else {
-                        content = ""
-                    }
-                    appState.updateMessageContent(
-                        sessionId: self.sessionId,
-                        messageId: assistantId,
-                        content: content,
-                        isStreaming: false
-                    )
-                    let reasoning = appState.messages.first(where: { $0.id == assistantId })?.reasoningContent ?? ""
-                    appState.setReasoningContent(
-                        sessionId: self.sessionId,
-                        messageId: assistantId,
-                        content: reasoning,
-                        isReasoningStreaming: false
-                    )
-                }
-            } else if !resolvedText.isEmpty {
-                let message = ChatMessage(
-                    id: assistantId,
-                    role: .assistant,
-                    content: resolvedText,
-                    createdAt: Date(),
-                    isStreaming: false
-                )
-                appState.appendMessage(message, sessionId: self.sessionId)
+        } else {
+            for messageId in activeAssistantBubbles {
+                releaseAssistantBubble(messageId: messageId)
             }
+            activeAssistantBubbles = []
+            pendingTextMessageId = nil
+            pendingReasoningMessageId = nil
+            streamingBuffer = ""
+            streamingReasoningBuffer = ""
         }
 
         if !reconciledMessages.isEmpty {
             for message in reconciledMessages {
-                appState.appendMessage(message, sessionId: self.sessionId)
+                appState.appendMessage(message, sessionId: sessionId)
             }
-        } else if let errorMessage, let assistantId = assistantMessageId, assistantVisibleInUI {
-            appState.updateMessageContent(
-                sessionId: self.sessionId,
-                messageId: assistantId,
-                content: cancelled || timedOut
-                    ? (timedOut ? "生成超时（\(errorMessage)）" : "已停止：\(errorMessage)")
-                    : errorMessage,
-                isStreaming: false
-            )
         } else if let errorMessage {
-            appState.appendMessage(
-                ChatMessage(
-                    id: UUID().uuidString,
-                    role: .system,
+            if let activeId = activeAssistantMessageId,
+               appState.messages.contains(where: { $0.id == activeId }) {
+                appState.updateMessageContent(
+                    sessionId: sessionId,
+                    messageId: activeId,
                     content: cancelled || timedOut
                         ? (timedOut ? "生成超时（\(errorMessage)）" : "已停止：\(errorMessage)")
-                        : "错误: \(errorMessage)",
-                    createdAt: Date()
-                ),
-                sessionId: self.sessionId
-            )
+                        : errorMessage,
+                    isStreaming: false
+                )
+            } else {
+                appState.appendMessage(
+                    ChatMessage(
+                        id: UUID().uuidString,
+                        role: .system,
+                        content: cancelled || timedOut
+                            ? (timedOut ? "生成超时（\(errorMessage)）" : "已停止：\(errorMessage)")
+                            : "错误: \(errorMessage)",
+                        createdAt: Date()
+                    ),
+                    sessionId: sessionId
+                )
+            }
         }
 
-        appState.clearStreamingFlags(sessionId: self.sessionId)
+        if !cancelled, errorMessage == nil, reconciledMessages.isEmpty {
+            let sessionMessages = appState.sessionManager.getSession(sessionId)?.messages ?? []
+            applyPersistedAssistantMessages(sessionMessages)
+        }
+
+        appState.clearStreamingFlags(sessionId: sessionId)
+    }
+
+    @MainActor
+    private func applyPersistedAssistantMessages(_ messages: [ChatMessage]) {
+        guard let appState else { return }
+        for message in messages where message.role == .assistant && message.shouldShowInChatTimeline {
+            let normalized = message.withPromotedAnswer()
+            guard normalized.hasDisplayContent || normalized.hasReasoning else { continue }
+            var finalMessage = normalized
+            finalMessage.isStreaming = false
+            finalMessage.isReasoningStreaming = false
+            finalMessage.toolCalls = nil
+            if appState.messages.contains(where: { $0.id == finalMessage.id }) {
+                appState.syncAssistantMessage(sessionId: sessionId, message: finalMessage)
+            } else {
+                appState.appendMessage(finalMessage, sessionId: sessionId)
+            }
+        }
     }
 
     /// Runs after the session runner is removed from `SessionTurnHost`.
     func completeTurnUI(activeEpoch: Int) {
         guard activeEpoch == turnEpoch else { return }
         appState?.finishTurnUI(sessionId: sessionId)
+    }
+
+    private var activeAssistantMessageId: String? {
+        assistantMessageId ?? activeAssistantBubbles.last
     }
 }

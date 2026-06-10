@@ -40,7 +40,11 @@ final class CompositeToolRouterTests: XCTestCase {
         )
 
         let tools = await router.listToolDefinitions()
-        XCTAssertGreaterThanOrEqual(tools.count, 12)
+        // Default settings: 8 core locals (no memory/sub-agent) + 1 MCP mock.
+        XCTAssertGreaterThanOrEqual(tools.count, 9)
+        XCTAssertNil(tools.first { $0.name == "create_plan" })
+        XCTAssertNil(tools.first { $0.name == "get_plan" })
+        XCTAssertNil(tools.first { $0.name == "finish_subtask" })
 
         let mcpTool = tools.first { $0.name == "filesystem__list" }
         XCTAssertNotNil(mcpTool)

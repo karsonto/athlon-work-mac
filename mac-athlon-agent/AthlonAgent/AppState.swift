@@ -1061,15 +1061,12 @@ final class AppState: ObservableObject {
             }
         }
 
-        let assistantId = request.ui.reserveAssistantMessageId()
-
         if let latest = sessionManager.getSession(sessionId) {
             session = latest
         }
 
         agentRuntime.sendTurn(
             session: session,
-            streamingAssistantId: assistantId,
             onSessionUpdated: { updated in
                 session = updated
             },
@@ -1085,7 +1082,7 @@ final class AppState: ObservableObject {
                     // Tool cards are separate rows; keep API history on session only.
                     assistant.toolCalls = nil
                     if assistant.isAssistantToolCallsOnly {
-                        // Tool cards are driven by onToolCall; hide tool_calls-only assistant rows (WPF).
+                        request.ui.releaseAssistantPlaceholder(messageId: assistant.id)
                     } else if self.messages.contains(where: { $0.id == assistant.id }) {
                         self.syncAssistantMessage(sessionId: sessionId, message: assistant)
                     } else if !assistant.content.isEmpty || assistant.hasReasoning {
@@ -1099,8 +1096,11 @@ final class AppState: ObservableObject {
             onToolStarted: { toolCall in
                 onToolCall(toolCall)
             },
+            onPreparingModelRequest: { _ in
+                request.ui.prepareModelRequest()
+            },
             onStreamingAssistantTarget: { id in
-                request.ui.adoptAssistantMessageId(id)
+                request.ui.beginModelIteration(messageId: id)
             },
             onStreamingAssistantUpdate: { _, content, reasoning in
                 if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

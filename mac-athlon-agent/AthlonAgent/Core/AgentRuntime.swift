@@ -7,6 +7,8 @@ struct AgentTurnCallbacks {
     var onStreamEvent: (@Sendable (AgentStreamEvent) async -> Void)?
     /// Fired before each model completion so UI streaming targets the correct assistant message id.
     var onStreamingAssistantTarget: (@Sendable (String) async -> Void)?
+    /// Fired while building API context (before the streaming placeholder bubble).
+    var onPreparingModelRequest: (@Sendable (String) async -> Void)?
     var onAssistantTextDelta: (@Sendable (String) async -> Void)?
     var onAssistantReasoningDelta: (@Sendable (String) async -> Void)?
     var onAssistantToolCallDelta: (@Sendable (StreamingToolCallDelta) async -> Void)?
@@ -103,7 +105,6 @@ final class AgentRuntime: @unchecked Sendable {
 
     func sendAsync(
         session: AgentSession,
-        assistantMessageId: String? = nil,
         callbacks: AgentTurnCallbacks? = nil
     ) async throws -> AgentSession {
         guard let userMessage = session.messages.last(where: { $0.role == .user }) else {
@@ -124,12 +125,6 @@ final class AgentRuntime: @unchecked Sendable {
 
         var modelToolRound = 0
         let maxModelToolRounds = AgentLoopOptionsScope.current?.maxModelToolRounds
-
-        /// One assistant message id for the entire user turn (WPF: single streaming assistant per turn).
-        let turnAssistantId: String = {
-            if let assistantMessageId, !assistantMessageId.isEmpty { return assistantMessageId }
-            return UUID().uuidString
-        }()
 
         let runId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let streamAdapter = AgentStreamAdapter(sessionId: workingSession.id, runId: runId)
@@ -177,8 +172,10 @@ final class AgentRuntime: @unchecked Sendable {
                 tools: tools
             )
 
-            if let onTarget = callbacks?.onStreamingAssistantTarget {
-                await onTarget(turnAssistantId)
+            let assistantMessageId = UUID().uuidString
+
+            if let onPreparing = callbacks?.onPreparingModelRequest {
+                Task { await onPreparing(assistantMessageId) }
             }
 
             let modelMessages = Self.buildModelMessages(
@@ -187,11 +184,15 @@ final class AgentRuntime: @unchecked Sendable {
                 includeReasoningInModelContext: Self.shouldIncludeReasoningInModelContext(settings: settings)
             )
 
+            if let onTarget = callbacks?.onStreamingAssistantTarget {
+                Task { await onTarget(assistantMessageId) }
+            }
+
             let completion = try await completeWithOverflowRetry(
                 session: workingSession,
                 callbacks: callbacks,
                 streamAdapter: streamAdapter,
-                assistantMessageId: turnAssistantId,
+                assistantMessageId: assistantMessageId,
                 modelMessages: modelMessages,
                 tools: tools,
                 frozenPrompt: frozenPrompt,
@@ -201,23 +202,23 @@ final class AgentRuntime: @unchecked Sendable {
             let response = completion.response
 
             if response.toolCalls.isEmpty {
-                if !streamAdapter.state.hasStartedTextMessage(turnAssistantId),
+                if !streamAdapter.state.hasStartedTextMessage(assistantMessageId),
                    !response.content.isEmpty {
                     await publishStreamEvents(
                         callbacks,
-                        streamAdapter.onTextDelta(messageId: turnAssistantId, delta: response.content)
+                        streamAdapter.onTextDelta(messageId: assistantMessageId, delta: response.content)
                     )
                 }
-                if !streamAdapter.state.hasStartedReasoningMessage(turnAssistantId),
+                if !streamAdapter.state.hasStartedReasoningMessage(assistantMessageId),
                    let reasoning = response.reasoningContent,
                    !reasoning.isEmpty {
                     await publishStreamEvents(
                         callbacks,
-                        streamAdapter.onReasoningDelta(messageId: turnAssistantId, delta: reasoning)
+                        streamAdapter.onReasoningDelta(messageId: assistantMessageId, delta: reasoning)
                     )
                 }
                 let assistant = ChatMessage(
-                    id: turnAssistantId,
+                    id: assistantMessageId,
                     role: .assistant,
                     content: response.content,
                     reasoningContent: response.reasoningContent ?? "",
@@ -242,7 +243,7 @@ final class AgentRuntime: @unchecked Sendable {
             }
 
             let assistantWithToolCalls = ChatMessage(
-                id: turnAssistantId,
+                id: assistantMessageId,
                 role: .assistant,
                 content: response.content,
                 reasoningContent: response.reasoningContent ?? "",
@@ -275,7 +276,7 @@ final class AgentRuntime: @unchecked Sendable {
             modelToolRound += 1
             if let maxModelToolRounds, maxModelToolRounds > 0, modelToolRound >= maxModelToolRounds {
                 let notice = ChatMessage(
-                    id: turnAssistantId,
+                    id: assistantMessageId,
                     role: .assistant,
                     content: "(Sub-agent reached the maximum tool round limit of \(maxModelToolRounds).)",
                     createdAt: Date(),
@@ -479,10 +480,6 @@ final class AgentRuntime: @unchecked Sendable {
             case .reasoningMessageContent(_, let delta):
                 if let onReasoning = callbacks.onAssistantReasoningDelta {
                     await onReasoning(delta)
-                }
-            case .textMessageStart(let messageId, _):
-                if let onTarget = callbacks.onStreamingAssistantTarget {
-                    await onTarget(messageId)
                 }
             default:
                 break
@@ -716,6 +713,9 @@ final class AgentRuntime: @unchecked Sendable {
         return settings.model.modelName.lowercased().contains("deepseek-v4")
     }
 
+    /// Caps per-tool payload when building API context (avoids multi-MB string copies after many file_read).
+    private static let maxToolContentCharsForApi = 48_000
+
     static func buildModelMessages(
         environmentPrompt: String,
         history: [ChatMessage],
@@ -723,6 +723,7 @@ final class AgentRuntime: @unchecked Sendable {
     ) -> [AgentModelMessage] {
         var messages: [AgentModelMessage] = [AgentModelMessage(role: "system", text: environmentPrompt)]
         var index = 0
+        var consumedStandaloneToolIds = Set<String>()
         while index < history.count {
             let message = history[index]
             switch message.role {
@@ -736,14 +737,25 @@ final class AgentRuntime: @unchecked Sendable {
                 }
                 index += 1
             case .assistant:
-                index = appendAssistantModelMessages(
+                let nextIndex = appendAssistantModelMessages(
                     messages: &messages,
                     history: history,
                     assistantIndex: index,
-                    includeReasoningInModelContext: includeReasoningInModelContext
-                ) + 1
+                    includeReasoningInModelContext: includeReasoningInModelContext,
+                    consumedToolMessageIds: &consumedStandaloneToolIds
+                )
+                index = nextIndex + 1
             case .tool:
-                messages.append(AgentModelMessage(role: "user", text: formatToolResultAsUserContent(message.content)))
+                if consumedStandaloneToolIds.contains(message.id) {
+                    index += 1
+                    continue
+                }
+                messages.append(
+                    AgentModelMessage(
+                        role: "user",
+                        text: formatToolResultAsUserContent(toolContentForApi(message.content))
+                    )
+                )
                 index += 1
             case .system:
                 messages.append(AgentModelMessage(role: "user", text: message.content))
@@ -753,11 +765,19 @@ final class AgentRuntime: @unchecked Sendable {
         return messages
     }
 
+    private static func toolContentForApi(_ content: String) -> String {
+        guard content.count > maxToolContentCharsForApi else { return content }
+        let head = content.prefix(maxToolContentCharsForApi / 2)
+        let tail = content.suffix(maxToolContentCharsForApi / 2)
+        return "\(head)\n...[truncated \(content.count - maxToolContentCharsForApi) chars for API context]...\n\(tail)"
+    }
+
     private static func appendAssistantModelMessages(
         messages: inout [AgentModelMessage],
         history: [ChatMessage],
         assistantIndex: Int,
-        includeReasoningInModelContext: Bool
+        includeReasoningInModelContext: Bool,
+        consumedToolMessageIds: inout Set<String>
     ) -> Int {
         let message = history[assistantIndex]
         let reasoning = includeReasoningInModelContext ? message.reasoningContent : nil
@@ -774,7 +794,7 @@ final class AgentRuntime: @unchecked Sendable {
 
         var scanIndex = assistantIndex + 1
         var toolMessages: [ChatMessage] = []
-        while scanIndex < history.count {
+        scanToolMessages: while scanIndex < history.count {
             switch history[scanIndex].role {
             case .tool:
                 toolMessages.append(history[scanIndex])
@@ -782,13 +802,14 @@ final class AgentRuntime: @unchecked Sendable {
             case .compaction:
                 scanIndex += 1
             default:
-                break
+                break scanToolMessages
             }
         }
 
         var toolByCallId: [String: ChatMessage] = [:]
         for toolMessage in toolMessages {
-            if let toolCallId = extractToolCallId(toolMessage.content) {
+            let toolCallId = resolvedToolCallId(for: toolMessage)
+            if let toolCallId {
                 toolByCallId[toolCallId] = toolMessage
             }
         }
@@ -804,8 +825,13 @@ final class AgentRuntime: @unchecked Sendable {
 
         let consumed = Set(toolCalls.map(\.id))
         for toolCall in toolCalls {
-            let content = toolByCallId[toolCall.id]?.content
-                ?? "Tool did not run or the result was not recorded."
+            let toolMessage = toolByCallId[toolCall.id]
+            if let toolMessage {
+                consumedToolMessageIds.insert(toolMessage.id)
+            }
+            let content = toolContentForApi(
+                toolMessage?.content ?? "Tool did not run or the result was not recorded."
+            )
             messages.append(
                 AgentModelMessage(
                     role: "tool",
@@ -816,13 +842,28 @@ final class AgentRuntime: @unchecked Sendable {
         }
 
         for toolMessage in toolMessages {
-            if let toolCallId = extractToolCallId(toolMessage.content), consumed.contains(toolCallId) {
+            let toolCallId = resolvedToolCallId(for: toolMessage)
+            if let toolCallId, consumed.contains(toolCallId) {
+                consumedToolMessageIds.insert(toolMessage.id)
                 continue
             }
-            messages.append(AgentModelMessage(role: "user", text: formatToolResultAsUserContent(toolMessage.content)))
+            consumedToolMessageIds.insert(toolMessage.id)
+            messages.append(
+                AgentModelMessage(
+                    role: "user",
+                    text: formatToolResultAsUserContent(toolContentForApi(toolMessage.content))
+                )
+            )
         }
 
         return scanIndex - 1
+    }
+
+    private static func resolvedToolCallId(for toolMessage: ChatMessage) -> String? {
+        if let id = toolMessage.toolCallId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+            return id
+        }
+        return extractToolCallId(toolMessage.content)
     }
 
     private static func formatToolResultAsUserContent(_ content: String) -> String {

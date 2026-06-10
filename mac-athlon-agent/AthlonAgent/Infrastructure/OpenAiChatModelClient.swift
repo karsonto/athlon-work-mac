@@ -77,7 +77,10 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
                     onReasoningDelta: onReasoningDelta,
                     onToolCallDelta: onToolCallDelta
                 )
-                if streamed.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // WPF only retries non-stream on transport/decode failure — not when the model
+                // returned tool_calls or reasoning-only output with empty `content` (common on DeepSeek).
+                let retryFallback = Self.shouldRetryWithNonStreamFallback(streamed)
+                if retryFallback {
                     let full = try await performCompletion(
                         request,
                         stream: false,
@@ -94,7 +97,7 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                // Fall back to non-streaming on failure.
+                // Fall back to non-streaming on failure (aligned with WPF).
             }
         }
 
@@ -107,6 +110,17 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         )
         logModelResponse(response, stream: false, usedNonStreamFallback: false)
         return response
+    }
+
+    /// Retry non-stream only when the SSE pass produced no usable model output at all.
+    private static func shouldRetryWithNonStreamFallback(_ streamed: AgentModelResponse) -> Bool {
+        if !streamed.toolCalls.isEmpty { return false }
+        if !streamed.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+        if let reasoning = streamed.reasoningContent,
+           !reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        return true
     }
 
     private func logModelResponse(_ response: AgentModelResponse, stream: Bool, usedNonStreamFallback: Bool) {
@@ -383,7 +397,18 @@ final class OpenAiChatModelClient: AgentChatModelClient, @unchecked Sendable {
         )
 
         let reasoning = reasoningBuilder.isEmpty ? nil : reasoningBuilder
-        return normalizeAssistantResponse(content: contentBuilder, toolCalls: toolCalls, reasoningContent: reasoning)
+        let normalized = normalizeAssistantResponse(
+            content: contentBuilder,
+            toolCalls: toolCalls,
+            reasoningContent: reasoning
+        )
+        // DeepSeek flash often streams the visible answer on reasoning_content only; promote to UI text.
+        if contentBuilder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !normalized.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let onTextDelta {
+            await onTextDelta(normalized.content)
+        }
+        return normalized
     }
 
     private func mergeStreamedAndFullResponse(streamed: AgentModelResponse, full: AgentModelResponse) -> AgentModelResponse {

@@ -111,10 +111,10 @@ final class AgentRuntimeService: ObservableObject {
 
     func sendTurn(
         session: AgentSession,
-        streamingAssistantId: String,
         onSessionUpdated: @escaping (AgentSession) -> Void,
         onMessage: @escaping (ChatMessage) -> Void,
         onToolStarted: @escaping (AgentToolCall) -> Void,
+        onPreparingModelRequest: @escaping (String) -> Void = { _ in },
         onStreamingAssistantTarget: @escaping (String) -> Void,
         onStreamingAssistantUpdate: @escaping (_ messageId: String, _ content: String, _ reasoning: String) -> Void,
         onStreamEvent: @escaping (AgentStreamEvent) -> Void = { _ in },
@@ -129,16 +129,15 @@ final class AgentRuntimeService: ObservableObject {
         error = nil
         currentReasoning = ""
         currentToolCalls = []
-        turnStreamAssistantId = streamingAssistantId
+        turnStreamAssistantId = nil
         turnStreamContent = ""
         turnStreamReasoning = ""
 
-        let initialAssistantId = streamingAssistantId
         let settingsSnapshot = settings
         let sessionSnapshot = session
 
         AgentFileLogger.log(
-            "sendTurn start session=\(session.id.prefix(8)) assistant=\(streamingAssistantId.prefix(8))",
+            "sendTurn start session=\(session.id.prefix(8))",
             category: "Turn"
         )
 
@@ -216,17 +215,25 @@ final class AgentRuntimeService: ObservableObject {
                     },
                     onStreamEvent: { [weak self] event in
                         guard let self else { return }
-                        await self.dispatchStreamEvent(
-                            event,
-                            onStreamingAssistantTarget: onStreamingAssistantTarget,
-                            onStreamingAssistantUpdate: onStreamingAssistantUpdate,
-                            onStreamEvent: onStreamEvent
-                        )
+                        // Do not block the SSE reader on MainActor UI work (DeepSeek + large tool context).
+                        Task { @MainActor in
+                            self.dispatchStreamEvent(
+                                event,
+                                onStreamingAssistantTarget: onStreamingAssistantTarget,
+                                onStreamingAssistantUpdate: onStreamingAssistantUpdate,
+                                onStreamEvent: onStreamEvent
+                            )
+                        }
                     },
                     onStreamingAssistantTarget: { id in
                         await MainActor.run { [weak self] in
                             self?.turnStreamAssistantId = id
                             onStreamingAssistantTarget(id)
+                        }
+                    },
+                    onPreparingModelRequest: { id in
+                        await MainActor.run {
+                            onPreparingModelRequest(id)
                         }
                     },
                     onAssistantTextDelta: { _ in },
@@ -238,7 +245,6 @@ final class AgentRuntimeService: ObservableObject {
 
                 let updated = try await agentRuntime.sendAsync(
                     session: sessionSnapshot,
-                    assistantMessageId: initialAssistantId,
                     callbacks: callbacks
                 )
 
@@ -286,11 +292,12 @@ final class AgentRuntimeService: ObservableObject {
         onStreamEvent(event)
 
         switch event {
-        case .textMessageStart(let messageId, _), .reasoningMessageStart(let messageId, _):
+        case .textMessageStart(let messageId, _):
             turnStreamAssistantId = messageId
             turnStreamContent = ""
+        case .reasoningMessageStart(let messageId, _):
+            turnStreamAssistantId = messageId
             turnStreamReasoning = ""
-            onStreamingAssistantTarget(messageId)
         case .textMessageContent(_, let delta):
             turnStreamContent = Self.mergeStreamingSnapshot(current: turnStreamContent, incoming: delta)
             if let id = turnStreamAssistantId {
