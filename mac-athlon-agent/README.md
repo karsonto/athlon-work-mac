@@ -1,7 +1,7 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/macOS-14%2B-blue?logo=apple&logoColor=white&labelColor=333">
-  <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/badge/macOS-14%2B-blue?logo=apple&logoColor=white&labelColor=eee">
-  <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-blue?logo=apple&logoColor=white&labelColor=333">
+  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/macOS-12%2B-blue?logo=apple&logoColor=white&labelColor=333">
+  <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/badge/macOS-12%2B-blue?logo=apple&logoColor=white&labelColor=eee">
+  <img alt="macOS 12+" src="https://img.shields.io/badge/macOS-12%2B-blue?logo=apple&logoColor=white&labelColor=333">
 </picture>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Swift-5-orange?logo=swift&logoColor=white&labelColor=333">
@@ -138,8 +138,8 @@ Athlon Agent 是一个功能完备的 **macOS 原生桌面 Agent 应用**，使�
 |---|---|
 | **语言** | Swift 5 |
 | **UI 框架** | SwiftUI + AppKit |
-| **最低系统** | macOS 14 (Sonoma) |
-| **构建工具** | Swift Package Manager (Tools Version 6.0) |
+| **最低系统** | macOS 12 (Monterey) |
+| **构建工具** | Swift Package Manager (Tools Version 6.0) — 在 macOS 13+ 主机上交叉编译 |
 | **LLM API** | OpenAI Chat Completions API（兼容接口） |
 | **外部依赖** | [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk.git) ≥ 0.12.0 |
 | **MCP 协议** | Model Context Protocol（服务器/客户端架构） |
@@ -153,8 +153,9 @@ Athlon Agent 是一个功能完备的 **macOS 原生桌面 Agent 应用**，使�
 
 ### 前置条件
 
-- macOS 14 (Sonoma) 或更高版本
-- Xcode 16+（推荐）
+> **构建环境：** 需要 Xcode 16+ / Swift 6.0（MCP SDK 要求）。构建可在任意 macOS 13+ 主机上进行。
+> **运行环境：** macOS 12 (Monterey) 或更高版本（Intel 或 Apple Silicon）。
+
 - 一个 OpenAI API Key（或其他兼容 API）
 
 ### 构建运行
