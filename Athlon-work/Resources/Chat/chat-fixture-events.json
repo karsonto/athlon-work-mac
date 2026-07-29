@@ -1,0 +1,58 @@
+[
+  { "type": "RESET_TIMELINE" },
+  {
+    "type": "USER_MESSAGE",
+    "messageId": "msg_user_001",
+    "content": "请列出当前工作区根目录下的文件。"
+  },
+  {
+    "type": "TEXT_MESSAGE_START",
+    "messageId": "msg_assistant_001",
+    "role": "assistant"
+  },
+  {
+    "type": "TEXT_MESSAGE_CONTENT",
+    "messageId": "msg_assistant_001",
+    "delta": "好的，我先查看工作区文件列表。"
+  },
+  {
+    "type": "TEXT_MESSAGE_END",
+    "messageId": "msg_assistant_001"
+  },
+  {
+    "type": "TOOL_CALL_START",
+    "toolCallId": "call_file_list_001",
+    "toolCallName": "file_list"
+  },
+  {
+    "type": "TOOL_CALL_ARGS",
+    "toolCallId": "call_file_list_001",
+    "delta": "{\"path\":\".\",\"recursive\":false}"
+  },
+  {
+    "type": "TOOL_CALL_END",
+    "toolCallId": "call_file_list_001",
+    "status": "running"
+  },
+  {
+    "type": "TOOL_CALL_RESULT",
+    "toolCallId": "call_file_list_001",
+    "messageId": "msg_tool_001",
+    "content": "README.md\nPackage.swift\nSources/\nTests/",
+    "status": "succeeded"
+  },
+  {
+    "type": "TEXT_MESSAGE_START",
+    "messageId": "msg_assistant_002",
+    "role": "assistant"
+  },
+  {
+    "type": "TEXT_MESSAGE_CONTENT",
+    "messageId": "msg_assistant_002",
+    "delta": "根目录包含 `README.md`、`Package.swift`、`Sources/` 和 `Tests/`。"
+  },
+  {
+    "type": "TEXT_MESSAGE_END",
+    "messageId": "msg_assistant_002"
+  }
+]

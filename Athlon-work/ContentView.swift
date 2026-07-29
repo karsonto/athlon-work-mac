@@ -7,18 +7,14 @@
 
 import SwiftUI
 
+/// Compatibility wrapper — prefer `MainShellView` via `Athlon_workApp`.
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
+        MainShellView()
     }
 }
 
 #Preview {
     ContentView()
+        .environment(MainShellStore())
 }
